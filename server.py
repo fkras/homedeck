@@ -290,8 +290,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.head('/v{API_VERSION}/status')
-async def status_endpoint():
+async def status_head_endpoint():
     return Response(status_code=200)
+
+
+@app.get('/v{API_VERSION}/status')
+async def status_get_endpoint():
+    """Report whether the deck script is currently running."""
+    is_running = is_script_running()
+    return {
+        'status': 'running' if is_running else 'stopped',
+        'deck_connected': is_running,
+    }
 
 
 if __name__ == "__main__":

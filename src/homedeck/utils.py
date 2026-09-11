@@ -3,7 +3,13 @@ import re
 import shutil
 import subprocess
 import zipfile
-from typing import Union
+from datetime import datetime
+from typing import Optional, Union
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python < 3.9
+    ZoneInfo = None
 
 from materialyoucolor.dynamiccolor.material_dynamic_colors import MaterialDynamicColors
 from materialyoucolor.hct import Hct
@@ -20,6 +26,52 @@ from materialyoucolor.scheme.scheme_vibrant import SchemeVibrant
 from .enums import ButtonElementAction
 
 HAS_OPTIPNG = shutil.which('optipng') is not None
+# optipng shaves a few KB off cached icons but costs hundreds of ms per icon,
+# which is painful on low-power boards like the Orange Pi Zero 2W.
+# Set ENABLE_OPTIPNG=1 to turn it back on.
+ENABLE_OPTIPNG = int(os.getenv('ENABLE_OPTIPNG', 0)) != 0
+
+TIMEZONE = os.getenv('TIMEZONE') or None
+_TIME_OF_DAY_RE = re.compile(r'^\s*(\d{1,2})\s*:\s*(\d{2})\s*$')
+
+
+def parse_time_of_day(value: Union[str, int, None]) -> int:
+    ''' Parse "HH:MM" into minutes since midnight. "24:00" means end of day. '''
+    if value is None:
+        return 0
+
+    if isinstance(value, int):
+        return max(0, min(value, 24 * 60))
+
+    match = _TIME_OF_DAY_RE.match(str(value))
+    if not match:
+        print(f'⚠️ Invalid time of day: {value!r}, falling back to 00:00')
+        return 0
+
+    hours, minutes = int(match.group(1)), int(match.group(2))
+    if hours > 24 or minutes > 59 or (hours == 24 and minutes > 0):
+        print(f'⚠️ Invalid time of day: {value!r}, falling back to 00:00')
+        return 0
+
+    return hours * 60 + minutes
+
+
+def local_now() -> datetime:
+    ''' Current local time, honoring the TIMEZONE env var when available. '''
+    if TIMEZONE and ZoneInfo is not None:
+        try:
+            return datetime.now(ZoneInfo(TIMEZONE))
+        except Exception:
+            # Bad/unknown zone name, or missing tzdata: fall back to system time
+            pass
+
+    return datetime.now()
+
+
+def current_minutes_of_day(now: Optional[datetime] = None) -> int:
+    ''' Minutes elapsed since local midnight. '''
+    now = now or local_now()
+    return now.hour * 60 + now.minute
 
 
 def normalize_tuple(offset):
@@ -148,7 +200,7 @@ def compress_folder(folder_path, output_zip, compress_level=0):
 
 
 def optimize_image(file_path, optimize_level=2):
-    if not HAS_OPTIPNG:
+    if not ENABLE_OPTIPNG or not HAS_OPTIPNG:
         return
 
     try:

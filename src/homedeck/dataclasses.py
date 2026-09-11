@@ -9,7 +9,13 @@ from strmdck.device import DeckDevice
 
 from .enums import ButtonElementAction, IconSource
 from .template import has_jinja_template
-from .utils import apply_presets, normalize_button_positions, normalize_hex_color
+from .utils import (
+    apply_presets,
+    current_minutes_of_day,
+    normalize_button_positions,
+    normalize_hex_color,
+    parse_time_of_day,
+)
 
 FONTS_MAP = {
     1: 'Source Han Sans SC',
@@ -24,11 +30,73 @@ FONTS_MAP = {
 
 
 @dataclass
+class ScheduleConfig:
+    ''' A time-of-day window that overrides brightness, e.g. dimming overnight. '''
+    # Field is named "from_" because "from" is a Python keyword. MainConfig
+    # remaps the YAML key "from" before constructing this.
+    from_: str = field(default='00:00')
+    to: str = field(default='00:00')
+    brightness: Optional[int] = field(default=None)
+
+    from_minutes: int = field(init=False, default=0)
+    to_minutes: int = field(init=False, default=0)
+
+    def __post_init__(self):
+        self.from_minutes = parse_time_of_day(self.from_)
+        self.to_minutes = parse_time_of_day(self.to)
+
+    def contains(self, minutes: int) -> bool:
+        ''' Whether a minutes-since-midnight value falls inside this window. '''
+        if self.from_minutes == self.to_minutes:
+            # Zero-length window never matches; use 00:00-24:00 for "always"
+            return False
+
+        if self.from_minutes < self.to_minutes:
+            # Same-day window, e.g. 09:00 -> 17:00
+            return self.from_minutes <= minutes < self.to_minutes
+
+        # Window wraps midnight, e.g. 22:00 -> 06:00
+        return minutes >= self.from_minutes or minutes < self.to_minutes
+
+
+@dataclass
 class SleepConfig:
     dim_brightness: Optional[int] = field(default=1)
     dim_timeout: Optional[int] = field(default=0)
 
     sleep_timeout: Optional[int] = field(default=0)
+
+    # Time-of-day brightness windows. The first matching window wins.
+    schedule: Optional[List[Dict]] = field(default_factory=lambda: [])
+
+    def __post_init__(self):
+        schedule = []
+        for entry in self.schedule or []:
+            if not isinstance(entry, dict):
+                continue
+
+            entry = dict(entry)
+            # "from" is a reserved word in Python, map it onto "from_"
+            if 'from' in entry:
+                entry['from_'] = entry.pop('from')
+
+            schedule.append(ScheduleConfig(**entry))
+
+        self.schedule = schedule
+
+    def active_schedule(self, minutes: Optional[int] = None) -> Optional[ScheduleConfig]:
+        ''' The schedule window covering the given time, or None. '''
+        if not self.schedule:
+            return None
+
+        if minutes is None:
+            minutes = current_minutes_of_day()
+
+        for entry in self.schedule:
+            if entry.contains(minutes):
+                return entry
+
+        return None
 
 
 @dataclass

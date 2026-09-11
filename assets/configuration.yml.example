@@ -5,6 +5,11 @@ sleep:
   dim_timeout: 10
   sleep_timeout: 300
 
+  # Optional time-of-day brightness windows (local time, 24h "HH:MM").
+  # Windows may wrap past midnight; the first matching entry wins.
+  # See configuration.wall-mount.yml.example for an always-on setup.
+  schedule: []
+
 system_buttons:
   $page.back:
     position: 1

@@ -52,6 +52,9 @@ class HomeDeck:
                 raise ValueError('configuration.yml file deleted')
         '''
 
+    # Coalesce bursts of Home Assistant state_changed events into one redraw
+    STATE_CHANGE_DEBOUNCE = 0.1
+
     def __init__(self, vendor_id: int = 0x2207, product_id: int = 0x0019):
         self._vendor_id = vendor_id
         self._product_id = product_id
@@ -87,6 +90,8 @@ class HomeDeck:
             # Check configuration changed
             print('✅ Configuration changed!')
             self._configuration = new_configuration
+            # Force brightness to be re-pushed against the new configuration
+            self._current_brightness = None
             self._wake_up()
         except Exception:
             traceback.print_exc()
@@ -94,7 +99,6 @@ class HomeDeck:
 
         configuration = self._configuration
         # await self._write_packet(b'\x01')  # Not sure what this is for
-        self._device.set_brightness(configuration.brightness)
         self._device.set_label_style(asdict(configuration.label_style))
 
         self.page_go_to('$root', 1, append_stack=True)
@@ -184,14 +188,13 @@ class HomeDeck:
                     elif self._sleep_status == SleepStatus.SLEEP:
                         # Only wake the device up on releasing button
                         if not is_holding and not command.pressed:
-                            # Reload page
-                            self.force_reload_current_page()
+                            # Turn the backlight on first so the deck feels
+                            # responsive, then repaint behind it.
+                            self._wake_up()
                             # Reload small window
                             self._device.restore_small_window()
-                            # Wait for a bit
-                            await asyncio.sleep(0.2)
-                            # Wake up
-                            self._wake_up()
+                            # Reload page
+                            self.force_reload_current_page()
 
                         # Don't accept current action
                         is_holding = False
@@ -221,35 +224,99 @@ class HomeDeck:
             # Keep alive
             self._device.keep_alive()
 
-            # Update sleep status
-            if self._sleep_status == SleepStatus.SLEEP or self._last_action_time <= 0:
-                continue
+            self._update_sleep_status()
 
-            sleep_config = self._configuration.sleep
-            if not sleep_config:
-                continue
+    def _update_sleep_status(self):
+        ''' Re-evaluate idle timeouts and the time-of-day schedule once per tick. '''
+        if not self._configuration:
+            return
 
-            diff = time.time() - self._last_action_time
-            if sleep_config.sleep_timeout > 0 and diff > sleep_config.sleep_timeout:
-                self._sleep()
-            elif sleep_config.dim_timeout > 0 and self._sleep_status != SleepStatus.DIM and diff > sleep_config.dim_timeout:
-                # Dim device
-                self._sleep_status = SleepStatus.DIM
-                self._device.set_brightness(sleep_config.dim_brightness)
+        # A schedule change must take effect even while the device is asleep or
+        # has never been touched, so it is evaluated before the early returns.
+        schedule_brightness = self._scheduled_brightness()
+        if schedule_brightness != self._active_schedule_brightness:
+            self._active_schedule_brightness = schedule_brightness
+            # Re-apply brightness for the new window at the current sleep status
+            self._apply_brightness()
+
+        if self._sleep_status == SleepStatus.SLEEP or self._last_action_time <= 0:
+            return
+
+        sleep_config = self._configuration.sleep
+        if not sleep_config:
+            return
+
+        diff = time.time() - self._last_action_time
+        if sleep_config.sleep_timeout > 0 and diff > sleep_config.sleep_timeout:
+            self._sleep()
+        elif sleep_config.dim_timeout > 0 and self._sleep_status != SleepStatus.DIM and diff > sleep_config.dim_timeout:
+            # Dim device
+            self._sleep_status = SleepStatus.DIM
+            self._apply_brightness()
+
+    def _scheduled_brightness(self):
+        ''' Brightness forced by the active time-of-day window, if any. '''
+        sleep_config = self._configuration.sleep if self._configuration else None
+        if not sleep_config:
+            return None
+
+        entry = sleep_config.active_schedule()
+        if not entry:
+            return None
+
+        # An entry without an explicit brightness falls back to dim_brightness
+        return entry.brightness if entry.brightness is not None else sleep_config.dim_brightness
+
+    def _target_brightness(self):
+        ''' The brightness the device should currently show. '''
+        configuration = self._configuration
+        if self._sleep_status == SleepStatus.SLEEP:
+            return 0
+
+        awake = configuration.brightness
+        sleep_config = configuration.sleep
+        scheduled = self._active_schedule_brightness
+
+        # Pressing a button always restores the normal brightness, day or night.
+        if self._sleep_status != SleepStatus.DIM:
+            return awake
+
+        if scheduled is not None:
+            # Inside a scheduled window (e.g. overnight): idle down to the
+            # scheduled level rather than the generic dim level.
+            return scheduled
+
+        if not sleep_config:
+            return awake
+
+        if sleep_config.schedule:
+            # A schedule is configured but we're outside every window, so this
+            # is "daytime": stay at full brightness instead of idling down.
+            # Without this a wall-mounted deck would dim all day long.
+            return awake
+
+        # No schedule at all: classic idle dimming.
+        return sleep_config.dim_brightness
+
+    def _apply_brightness(self):
+        brightness = self._target_brightness()
+        if brightness == self._current_brightness:
+            return
+
+        self._current_brightness = brightness
+        self._device.set_brightness(brightness)
 
     def _wake_up(self):
-        if self._sleep_status != SleepStatus.WAKE:
-            self._device.set_brightness(self._configuration.brightness)
-
-        # Sleep device
         self._sleep_status = SleepStatus.WAKE
         self._last_action_time = time.time()
+        self._active_schedule_brightness = self._scheduled_brightness()
+        self._apply_brightness()
 
     def _sleep(self):
         # Sleep device
-        self._device.set_brightness(0)
         self._sleep_status = SleepStatus.SLEEP
         self._last_action_time = time.time()
+        self._apply_brightness()
 
     async def _on_interacted(self, interaction: InteractionType, index: int, state: object):
         print('👆', interaction.value, index, state)
@@ -288,6 +355,11 @@ class HomeDeck:
 
         self._sleep_status = SleepStatus.WAKE
         self._last_action_time = time.time()
+        self._current_brightness = None
+        self._active_schedule_brightness = None
+
+        # Debounce timer for Home Assistant state changes
+        self._ha_reload_timer = None
 
     async def _setup(self):
         # Setup event bus
@@ -355,9 +427,25 @@ class HomeDeck:
                 await asyncio.sleep(reconnect_delay)
 
     async def _ha_on_state_changed(self, _):
-        # Only reload page when it's not sleeping
-        if self._sleep_status != SleepStatus.SLEEP:
-            self.reload_current_page()
+        # Don't redraw a screen nobody can see
+        if self._sleep_status == SleepStatus.SLEEP:
+            return
+
+        # Home Assistant often emits a burst of state_changed events at once
+        # (e.g. a scene turning on six lights). Coalesce them into one redraw.
+        if self._ha_reload_timer:
+            self._ha_reload_timer.cancel()
+
+        async def debounced_reload():
+            try:
+                await asyncio.sleep(self.STATE_CHANGE_DEBOUNCE)
+                self._ha_reload_timer = None
+                self.reload_current_page()
+            except asyncio.CancelledError:
+                # Superseded by a newer event; the newer timer will redraw
+                pass
+
+        self._ha_reload_timer = asyncio.create_task(debounced_reload())
 
     async def _setup_hot_reload(self):
         print('Setting up hot reload')

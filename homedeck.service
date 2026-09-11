@@ -1,0 +1,26 @@
+[Unit]
+Description=HomeDeck D200 Controller
+After=network-online.target
+Wants=network-online.target
+# Never stop retrying: the deck or Home Assistant may be unavailable for a
+# long stretch (USB replug, HA restart) and the service must recover on its own.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# deck.py calls load_dotenv(), which reads .env from this directory.
+# Deliberately no EnvironmentFile=: systemd would keep the surrounding quotes
+# in values like HA_HOST="ws://..." that python-dotenv strips.
+WorkingDirectory=/opt/homedeck
+ExecStart=/opt/homedeck/.venv/bin/python -u /opt/homedeck/deck.py
+
+# The D200 can take a moment to enumerate over USB after a cold boot, and
+# Home Assistant may still be starting, so always come back up.
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

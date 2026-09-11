@@ -15,6 +15,11 @@ sleep:
   dim_timeout: 30
   sleep_timeout: 300
 
+  # Time-of-day brightness windows (local time, 24h "HH:MM"). Windows may wrap
+  # midnight. Empty by default; see assets/configuration.yml.example for a
+  # wall-mounted always-on setup.
+  schedule: []
+
 system_buttons:
   $page.back:
     position: 1
