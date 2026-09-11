@@ -31,6 +31,32 @@ class TestParseTimeOfDay:
         assert parse_time_of_day(None) == 0
 
 
+class TestYamlTimeQuoting:
+    """Times must be quoted in YAML.
+
+    YAML 1.1 reads an unquoted 22:00 as the sexagesimal integer 1320, while
+    06:00 stays a string. The schema rejects the integer form, which is what
+    keeps a mis-quoted config from silently dimming at the wrong hour — so any
+    tool that generates this YAML has to quote the values.
+    """
+
+    def test_unquoted_time_becomes_an_int(self):
+        import yaml
+
+        assert yaml.safe_load('to: 22:00')['to'] == 1320
+        assert yaml.safe_load("to: '22:00'")['to'] == '22:00'
+
+    def test_int_minutes_are_still_parsed_sanely(self):
+        # 1320 happens to be exactly 22:00 in minutes, so if one ever reaches
+        # the parser it is interpreted consistently rather than as garbage.
+        assert parse_time_of_day(1320) == minutes(22)
+        assert parse_time_of_day(360) == minutes(6)
+
+    def test_int_is_clamped_to_a_day(self):
+        assert parse_time_of_day(99999) == minutes(24)
+        assert parse_time_of_day(-5) == 0
+
+
 class TestScheduleWindow:
     def test_same_day_window(self):
         entry = ScheduleConfig(from_='09:00', to='17:00')

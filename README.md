@@ -106,6 +106,9 @@ deck overnight without ever turning it off.
 Notes:
 - Windows may **wrap past midnight** (`22:00` → `06:00` is the night, not the day).
 - The **first matching** entry wins if windows overlap.
+- **Quote the times.** YAML 1.1 reads an unquoted `22:00` as the integer `1320`
+  (sexagesimal), so write `'22:00'`. The schema rejects the unquoted form rather
+  than dimming at the wrong hour, but it's easy to trip over.
 - Times are **local to the machine**, using the `TIMEZONE` variable from `.env`.
   Make sure the system clock is correct (NTP is enabled by default on DietPi).
 - Pressing a button inside a window returns the display to the normal
