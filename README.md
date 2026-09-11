@@ -30,6 +30,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
+| Watchdog reconnects an unresponsive deck | strmdck swallows every write error, so if the deck stops accepting writes (notably when the D200's own firmware screensaver takes over) HomeDeck kept sending keep-alives into a void forever |
 | Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
 | Fixed `if os.path.exists:` in `get_configuration()` | Missing parentheses meant the guard was always true, so a missing `configuration.yml` returned a 500 instead of empty content |
 
@@ -393,6 +394,39 @@ buttons:
   - name: {{ states("light.living_room_light") }}
 ```
 
+
+### The D200 firmware screensaver
+
+If a screensaver was ever set with the official Ulanzi app, the **device's own
+firmware** will eventually take the screen over. While it is showing, the D200
+stops reporting button presses to the host and ignores writes — it is
+unresponsive until physically unplugged.
+
+This is **not** something HomeDeck controls: `sleep_timeout: 0` has no effect on
+it, and the protocol has no command to disable or clear it. The five outbound
+commands HomeDeck knows are set-buttons, partial-update, small-window-data,
+brightness and label-style; the Ulanzi app uses commands nobody has
+reverse-engineered.
+
+What this fork does is **notice and recover**: if the deck ignores writes for
+`DEVICE_TIMEOUT` seconds (10 by default), HomeDeck closes the handle and
+reconnects rather than sitting there silently. That does not defeat the
+screensaver, but it does mean the deck comes back on its own where it
+previously needed an unplug.
+
+To actually stop it, in rough order of preference:
+
+1. Look for a screensaver **timeout/duration** setting in the Ulanzi app and set
+   it to Never, if offered.
+2. Set a **fully black image** as the screensaver. It still swallows input while
+   active, but nothing visible changes on a wall-mounted deck.
+3. Ask Ulanzi support how to disable a screensaver or factory-reset the device —
+   there is no documented reset, and guessing at button combinations risks
+   bricking the firmware.
+4. Capture the USB traffic while the official app sets a screensaver and add the
+   command to `strmdck`. The packet framing is simple (`7c7c`, 2-byte command,
+   4-byte little-endian length, 1016-byte payload), so a new command ID drops
+   straight in.
 
 ### Editing the configuration from Home Assistant
 

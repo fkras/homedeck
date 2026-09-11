@@ -24,6 +24,7 @@ dependencies = [
     "pillow==11.1.0",
     "psutil==7.0.0",
     "pytest==8.3.4",
+    "pytest-asyncio==0.25.3",
     "python-dotenv==1.0.1",
     "PyYAML==6.0.2",
     "toml==0.10.2",
@@ -37,3 +38,7 @@ dependencies = [
 Homepage = "https://github.com/redphx/strmdck-home-assistant"
 Issues = "https://github.com/redphx/strmdck-home-assistant/issues"
 Repository = "https://github.com/redphx/strmdck-home-assistant.git"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

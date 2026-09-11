@@ -27,6 +27,10 @@ HA_HOST = os.getenv('HA_HOST')
 HA_ACCESS_TOKEN = os.getenv('HA_ACCESS_TOKEN')
 
 
+class DeviceUnresponsiveError(RuntimeError):
+    ''' Raised when the deck stops accepting writes and must be reconnected. '''
+
+
 class HomeDeck:
     class ConfigurationFileChangeHandler(FileSystemEventHandler):
         def __init__(self, deck: HomeDeck):
@@ -54,6 +58,9 @@ class HomeDeck:
 
     # Coalesce bursts of Home Assistant state_changed events into one redraw
     STATE_CHANGE_DEBOUNCE = 0.1
+
+    # Reconnect after the device has ignored writes for this many seconds
+    DEVICE_TIMEOUT = 10
 
     def __init__(self, vendor_id: int = 0x2207, product_id: int = 0x0019):
         self._vendor_id = vendor_id
@@ -221,10 +228,70 @@ class HomeDeck:
                 break
 
             await asyncio.sleep(1)
-            # Keep alive
-            self._device.keep_alive()
+
+            # Keep alive. The device can stop accepting writes without the USB
+            # device disappearing - notably when the D200's own firmware
+            # screensaver takes over, after which it ignores the host entirely.
+            # strmdck swallows write errors, so probe the HID handle directly.
+            if not self._device_is_alive():
+                raise DeviceUnresponsiveError(
+                    f'Device stopped responding for {self.DEVICE_TIMEOUT}s - reconnecting'
+                )
 
             self._update_sleep_status()
+
+    def _device_is_alive(self) -> bool:
+        ''' Send the keep-alive and report whether the device still accepts it. '''
+        try:
+            self._device.keep_alive()
+        except Exception as e:
+            print('⚠️ keep_alive raised:', e)
+            self._unresponsive_since = self._unresponsive_since or time.time()
+        else:
+            # strmdck writes asynchronously and hides failures, so a clean
+            # return is not proof of life. Check the HID handle separately.
+            if self._hid_write_ok():
+                self._unresponsive_since = None
+                return True
+
+            self._unresponsive_since = self._unresponsive_since or time.time()
+
+        # Tolerate brief hiccups; only give up once the device has been
+        # unresponsive for a sustained period.
+        elapsed = time.time() - self._unresponsive_since
+        if elapsed >= self.DEVICE_TIMEOUT:
+            return False
+
+        print(f'⚠️ Device not responding ({elapsed:.0f}s)')
+        return True
+
+    def _hid_write_ok(self) -> bool:
+        ''' Probe the underlying HID handle. True when it still accepts writes. '''
+        hid_device = getattr(self._device, '_hid_device', None)
+        if not hid_device:
+            return False
+
+        try:
+            # A zero-length write is rejected by hidapi, so re-send the
+            # small-window packet the keep-alive already uses; it is harmless
+            # to repeat and is the cheapest packet the protocol has.
+            written = hid_device.write(self._keep_alive_packet())
+        except Exception as e:
+            print('⚠️ HID write failed:', e)
+            return False
+
+        # hidapi returns -1 on failure and the byte count on success
+        return written is None or written >= 0
+
+    def _keep_alive_packet(self) -> bytes:
+        ''' The packet strmdck sends for keep_alive, rebuilt here for probing. '''
+        from strmdck.devices.ulanzi_d200 import CommandProtocol, PacketStruct
+
+        return PacketStruct.build(dict(
+            command_protocol=CommandProtocol.OUT_SET_SMALL_WINDOW_DATA.value,
+            length=None,
+            data=b'\x00',
+        ))
 
     def _update_sleep_status(self):
         ''' Re-evaluate idle timeouts and the time-of-day schedule once per tick. '''
@@ -357,6 +424,7 @@ class HomeDeck:
         self._last_action_time = time.time()
         self._current_brightness = None
         self._active_schedule_brightness = None
+        self._unresponsive_since = None
 
         # Debounce timer for Home Assistant state changes
         self._ha_reload_timer = None
