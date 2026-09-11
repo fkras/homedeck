@@ -30,6 +30,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
+| Writes the deck's 14th manifest slot | The official app sends 14 slots keyed `{col}_{row}`, ending with `3_2`; strmdck stops at 13, so that slot kept whatever the firmware drew there — the Ulanzi logo and URL behind the small window |
 | Watchdog reconnects an unresponsive deck | strmdck swallows every write error, so if the deck stops accepting writes (notably when the D200's own firmware screensaver takes over) HomeDeck kept sending keep-alives into a void forever |
 | Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
 | Fixed `if os.path.exists:` in `get_configuration()` | Missing parentheses meant the guard was always true, so a missing `configuration.yml` returned a 500 instead of empty content |
@@ -394,6 +395,32 @@ buttons:
   - name: {{ states("light.living_room_light") }}
 ```
 
+
+### Actions must match the entity's domain
+
+Home Assistant picks the service by **domain**, taken from the part of `action:`
+before the dot. It is not inferred from `entity_id`, so calling the wrong
+domain fails silently - the deck reports success and nothing happens.
+
+```yaml
+# Wrong: light.toggle ignores a switch.* entity
+- entity_id: switch.wifi_smart_switch
+  presets: $light            # $light hardcodes action: light.toggle
+
+# Right
+- entity_id: switch.wifi_smart_switch
+  tap_action:
+    action: switch.toggle
+```
+
+The `$light` preset in `configuration.base.yml` hardcodes `light.toggle`, so it
+only suits `light.*` entities. For anything else set `tap_action` yourself, or
+copy the `switch.tile` preset from
+[`configuration.full-deck.yml.example`](assets/configuration.full-deck.yml.example).
+
+Rule of thumb: the action's domain should match the entity's prefix -
+`switch.` → `switch.toggle`, `fan.` → `fan.toggle`, `scene.` →
+`scene.turn_on`, `script.` → `script.turn_on`.
 
 ### The D200 firmware screensaver
 

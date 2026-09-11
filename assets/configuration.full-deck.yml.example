@@ -78,6 +78,20 @@ presets:
       'on':
         icon_background_color: 8A6A00
 
+  # The same, for a switch.* entity. Home Assistant picks the service by
+  # domain, so a switch needs switch.toggle - light.toggle is silently ignored
+  # on anything that isn't a light.* entity.
+  switch.tile:
+    presets: light.tile
+    tap_action:
+      action: switch.toggle
+    hold_action: null
+    icon: mdi:power-plug-outline
+    states:
+      'on':
+        icon: mdi:power-plug
+        icon_background_color: 8A6A00
+
 pages:
   $root:
     buttons:
@@ -90,9 +104,10 @@ pages:
         entity_id: light.kitchen            # EDIT
         name: Kitchen
 
-      - presets: light.tile
-        entity_id: light.bedroom            # EDIT
-        name: Bedroom
+      # A switch.* entity needs the switch preset, not the light one
+      - presets: switch.tile
+        entity_id: switch.wifi_smart_switch  # EDIT
+        name: Plug
 
       - presets: tile.amber
         name: All On
