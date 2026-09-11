@@ -458,7 +458,7 @@ class HomeDeck:
             str(stats['cpu']),
             str(stats['mem']),
             now.strftime('%H:%M:%S'),
-            str(stats['gpu']),      # the app varies this; temperature fits it
+            str(stats['gpu']),
             self.CLOCK_FORMAT,
             '',                     # weekday, only populated for some modes
         ])
@@ -472,12 +472,19 @@ class HomeDeck:
         self._device._hid_device.write(packet)
 
     def _system_stats(self) -> dict:
-        ''' CPU, memory and temperature for the small window's STATS mode.
+        ''' CPU and memory percentages for the small window's STATS mode.
 
         strmdck's keep_alive() sends zeroes for all of these, so STATS showed
-        nothing useful. The protocol's field list is fixed
-        ("mode|cpu|mem|time|gpu") and has no temperature slot, so the
-        temperature goes in the unused GPU field.
+        nothing useful.
+
+        There is no temperature field. Every field the official app sends is
+        accounted for - mode, cpu, mem, time, gpu, clock format, weekday - and
+        in a capture its "gpu" value ranged 0-5 alongside CPU figures of 6-26,
+        which is a utilisation percentage, not degrees. Writing a temperature
+        there would render as a bogus GPU percentage, so this reports 0 for
+        GPU exactly as the app does on a machine without one. Use
+        _cpu_temperature() and a Home Assistant sensor if you want the Pi's
+        temperature on a button.
         '''
         stats = {'cpu': 0, 'mem': 0, 'gpu': 0}
 
@@ -488,10 +495,6 @@ class HomeDeck:
             stats['mem'] = int(psutil.virtual_memory().percent)
         except Exception:
             pass
-
-        temperature = self._cpu_temperature()
-        if temperature is not None:
-            stats['gpu'] = temperature
 
         return stats
 

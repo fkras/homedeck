@@ -1,10 +1,8 @@
 """Tests for the system-stats helpers.
 
-These collect CPU, memory and temperature for the small window's STATS mode.
-They are not wired into the keep-alive yet: a capture of the official Ulanzi
-app shows its small-window payload carries more fields than strmdck builds, and
-sending the short form disturbs rendering. See
-guides/reverse-engineering-usb.md.
+_system_stats() feeds the small window's STATS view. _cpu_temperature() is not
+part of it: the payload has no temperature field, so the Pi's temperature needs
+a Home Assistant sensor and an ordinary button instead.
 """
 
 import builtins
@@ -90,9 +88,14 @@ class TestCpuTemperature:
 
         assert make_deck()._cpu_temperature() is None
 
-    def test_temperature_lands_in_the_gpu_field(self, monkeypatch):
+    def test_temperature_does_not_leak_into_the_gpu_field(self, monkeypatch):
+        """The gpu field is a utilisation percentage, not degrees.
+
+        In a capture of the official app it ranged 0-5 while CPU ran 6-26, so
+        writing a temperature there would render as a bogus GPU percentage.
+        """
         monkeypatch.setattr(psutil, 'sensors_temperatures',
                             lambda: {'cpu_thermal': [FakeReading(55.0)]},
                             raising=False)
 
-        assert make_deck()._system_stats()['gpu'] == 55
+        assert make_deck()._system_stats()['gpu'] == 0
