@@ -400,7 +400,7 @@ class HomeDeck:
         # Small window button
         if index == 13:
             if interaction == InteractionType.TAP:
-                self._device.set_small_window_mode(state)
+                self._cycle_small_window_mode()
             elif interaction == InteractionType.HOLD:
                 # Sleep
                 self._sleep()
@@ -413,6 +413,29 @@ class HomeDeck:
         button = self._configuration.get_button(self._current_page_id, index)
         if button:
             await button.trigger_action(self, interaction)
+
+    def _cycle_small_window_mode(self):
+        ''' Step the small window to the next mode and redraw it.
+
+        The raw `state` byte the deck reports for this button is not a mode
+        index - it alternates between values like 1 and 200 - so feeding it
+        straight to set_small_window_mode() only ever resolved to CLOCK, and
+        tapping appeared to do nothing. Track the mode ourselves instead, and
+        push it to the device, which set_small_window_mode() alone does not do.
+        '''
+        from strmdck.devices.ulanzi_d200 import SmallWindowMode
+
+        modes = list(SmallWindowMode)
+        try:
+            index = modes.index(self._device._small_window_mode)
+        except (AttributeError, ValueError):
+            index = 0
+
+        next_mode = modes[(index + 1) % len(modes)]
+        self._device.set_small_window_mode(next_mode.value)
+        self._device.restore_small_window()
+
+        print('🕐 Small window mode:', next_mode.name)
 
     def _reset(self):
         self._is_ready = False

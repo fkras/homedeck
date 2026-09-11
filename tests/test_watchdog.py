@@ -135,3 +135,70 @@ class TestKeepAliveLoop:
 
         with pytest.raises(DeviceUnresponsiveError):
             await deck._keep_alive()
+
+
+class TestSmallWindowMode:
+    """The small window (button 13) cycles STATS -> CLOCK -> BACKGROUND.
+
+    The deck reports a raw `state` byte for this button that is not a mode
+    index - it alternates between values like 1 and 200 - so passing it
+    straight to set_small_window_mode() only ever resolved to CLOCK and
+    tapping appeared to do nothing.
+    """
+
+    def test_cycles_through_every_mode(self):
+        from strmdck.devices.ulanzi_d200 import SmallWindowMode
+
+        device = FakeSmallWindowDevice()
+        deck = HomeDeck.__new__(HomeDeck)
+        deck._device = device
+
+        total = len(SmallWindowMode)
+        seen = []
+        for _ in range(total + 1):
+            deck._cycle_small_window_mode()
+            seen.append(device._small_window_mode)
+
+        # Every mode is visited...
+        assert set(seen[:total]) == set(SmallWindowMode)
+        # ...and one more tap wraps back to where the cycle began
+        assert seen[total] == seen[0]
+
+    def test_pushes_the_change_to_the_device(self):
+        """set_small_window_mode() only sets a variable; the deck must redraw."""
+        device = FakeSmallWindowDevice()
+        deck = HomeDeck.__new__(HomeDeck)
+        deck._device = device
+
+        deck._cycle_small_window_mode()
+
+        assert device.restored == 1
+
+    def test_survives_an_unknown_current_mode(self):
+        device = FakeSmallWindowDevice()
+        device._small_window_mode = None
+        deck = HomeDeck.__new__(HomeDeck)
+        deck._device = device
+
+        deck._cycle_small_window_mode()   # must not raise
+
+        assert device._small_window_mode is not None
+
+
+class FakeSmallWindowDevice:
+    def __init__(self):
+        from strmdck.devices.ulanzi_d200 import SmallWindowMode
+
+        self._small_window_mode = SmallWindowMode.CLOCK
+        self.restored = 0
+
+    def set_small_window_mode(self, mode):
+        from strmdck.devices.ulanzi_d200 import SmallWindowMode
+
+        try:
+            self._small_window_mode = SmallWindowMode(mode)
+        except Exception:
+            self._small_window_mode = SmallWindowMode.CLOCK
+
+    def restore_small_window(self):
+        self.restored += 1
