@@ -74,6 +74,11 @@ class HomeDeck:
     # Reconnect after the device has ignored writes for this many seconds
     DEVICE_TIMEOUT = 10
 
+    # Slots beyond BUTTON_COUNT to blank explicitly. The D200's manifest has a
+    # 14th entry ("3_2") that the official app writes and strmdck does not.
+    # Set to 0 to send only the buttons strmdck knows about.
+    EXTRA_SLOTS = 1
+
     # How often to check whether configuration.yml changed
     CONFIG_POLL_INTERVAL = 0.2
     # Settle time before reading a config file that was just written
@@ -156,7 +161,14 @@ class HomeDeck:
             # Update full page. Pad to the deck's key count so slots this page
             # doesn't use are explicitly blanked rather than left showing the
             # previous page's buttons.
-            buttons = PageElement.generate(page.buttons, slot_count=self._device.BUTTON_COUNT)
+            #
+            # One past BUTTON_COUNT: a capture of the official app shows it
+            # writes 14 manifest entries, the last being "3_2" (index 13) with
+            # an empty icon. strmdck stops at 13, so whatever the firmware drew
+            # in that slot - the Ulanzi branding behind the small window - is
+            # never cleared. Sending it blank is what the official app does.
+            slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS
+            buttons = PageElement.generate(page.buttons, slot_count=slot_count)
             self._device.set_buttons(buttons)
         else:
             # Only update changed buttons
