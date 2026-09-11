@@ -224,8 +224,18 @@ class PageElement:
         return _is_equal(self.button_raws, other.button_raws)
 
     @staticmethod
-    def generate(buttons: Dict[int, ButtonElement]):
+    def generate(buttons: Dict[int, ButtonElement], *, slot_count: int = 0):
+        ''' Build the manifest the deck renders.
+
+        `slot_count` pads the result with explicit blanks up to that many
+        slots. Without it a page with fewer buttons than the deck has keys
+        simply omits the rest, and the device keeps showing whatever the
+        previous page left in those slots.
+        '''
         output = {}
+
+        for index in range(slot_count):
+            output.setdefault(index, None)
 
         for index, button in buttons.items():
             if not button:

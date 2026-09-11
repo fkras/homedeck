@@ -153,8 +153,10 @@ class HomeDeck:
             return
 
         if force or self._current_page_element != page:
-            # Update full page
-            buttons = PageElement.generate(page.buttons)
+            # Update full page. Pad to the deck's key count so slots this page
+            # doesn't use are explicitly blanked rather than left showing the
+            # previous page's buttons.
+            buttons = PageElement.generate(page.buttons, slot_count=self._device.BUTTON_COUNT)
             self._device.set_buttons(buttons)
         else:
             # Only update changed buttons
