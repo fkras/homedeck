@@ -275,11 +275,13 @@ class PageConfig:
     buttons: List[PageButtonConfig]  # Input is `str`
     buttons_raw: Dict = None
 
+    name: Optional[str] = None
     button_positions: Optional[Dict[str, Dict]] = field(default_factory=lambda: {})
 
-    def __init__(self, id: str, buttons: dict, button_positions: dict = {}):
+    def __init__(self, id: str, buttons: dict, button_positions: dict = {}, name: str = None):
         self.id = id
         self.buttons = []
+        self.name = name
         self.button_positions = button_positions
 
         # Set `buttons` string to buttons_raw

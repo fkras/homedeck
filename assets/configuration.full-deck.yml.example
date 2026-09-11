@@ -1,0 +1,207 @@
+# All 13 buttons styled, with a second page.
+#
+#   cp assets/configuration.full-deck.yml.example assets/configuration.yml
+#
+# Buttons marked "EDIT" need one of your own Home Assistant entity_ids. Until
+# you change them they render but do nothing useful. List yours with:
+#
+#   curl -s -H "Authorization: Bearer $HA_ACCESS_TOKEN" \
+#     http://192.168.0.31:8123/api/states | jq -r '.[].entity_id' | sort
+#
+# NOTE: the big button (the small window) is NOT configurable here. It is drawn
+# by the deck's own firmware - clock, stats or background - and is cycled by
+# tapping it. See the README.
+
+brightness: 90
+
+sleep:
+  sleep_timeout: 0      # never blank: this is a wall-mounted deck
+  dim_timeout: 30
+  dim_brightness: 10
+  schedule:
+    - from: '22:00'
+      to: '06:00'
+      brightness: 10
+
+label_style:
+  align: bottom
+  color: FFFFFF
+  font: 8
+  show_title: true
+  size: 9
+  weight: 80
+
+system_buttons:
+  $page.back:
+    position: 1
+  $page.previous:
+    position: 2
+  $page.next:
+    position: 3
+
+presets:
+  # A filled tile. icon_padding shrinks the glyph so the colour reads as a
+  # background rather than a border.
+  tile:
+    icon_padding: 42
+    icon_border_radius: 18
+    icon_size: 196
+    text_align: bottom
+    text_size: 20
+
+  tile.red:
+    presets: tile
+    icon_background_color: B9003E
+  tile.blue:
+    presets: tile
+    icon_background_color: 1B4D89
+  tile.green:
+    presets: tile
+    icon_background_color: 1E7A4C
+  tile.amber:
+    presets: tile
+    icon_background_color: B87503
+  tile.purple:
+    presets: tile
+    icon_background_color: 5B3A8E
+  tile.slate:
+    presets: tile
+    icon_background_color: 3A4450
+
+  # A light that colours itself by state
+  light.tile:
+    presets: $light
+    icon_padding: 42
+    icon_border_radius: 18
+    icon_background_color: 3A4450
+    states:
+      'on':
+        icon_background_color: 8A6A00
+
+pages:
+  $root:
+    buttons:
+      # ---- Row 1: lights -------------------------------------------------
+      - presets: light.tile
+        entity_id: light.living_room        # EDIT
+        name: Living
+
+      - presets: light.tile
+        entity_id: light.kitchen            # EDIT
+        name: Kitchen
+
+      - presets: light.tile
+        entity_id: light.bedroom            # EDIT
+        name: Bedroom
+
+      - presets: tile.amber
+        name: All On
+        icon: mdi:lightbulb-group
+        tap_action:
+          action: light.turn_on
+          data:
+            entity_id: all                  # EDIT
+
+      - presets: tile.slate
+        name: All Off
+        icon: mdi:lightbulb-group-off
+        tap_action:
+          action: light.turn_off
+          data:
+            entity_id: all                  # EDIT
+
+      # ---- Row 2: sensors and climate ------------------------------------
+      - presets: $sensor.temperature
+        entity_id: sensor.living_room_temperature   # EDIT
+        name: Temp
+        icon_color: FF9E4A
+
+      - presets: $sensor.humidity
+        entity_id: sensor.living_room_humidity      # EDIT
+        name: Humidity
+        icon_color: 6EC6FF
+
+      - presets: tile.blue
+        name: Cool
+        icon: mdi:snowflake
+        tap_action:
+          action: climate.set_temperature
+          data:
+            entity_id: climate.living_room          # EDIT
+            temperature: 21
+
+      - presets: tile.red
+        name: Heat
+        icon: mdi:fire
+        tap_action:
+          action: climate.set_temperature
+          data:
+            entity_id: climate.living_room          # EDIT
+            temperature: 24
+
+      - presets: tile.purple
+        name: More
+        icon: mdi:dots-horizontal
+        tap_action:
+          action: $page.go_to
+          data: scenes
+
+      # ---- Row 3: scenes and media ---------------------------------------
+      - presets: tile.purple
+        name: Movie
+        icon: mdi:movie-open
+        tap_action:
+          action: scene.turn_on
+          data:
+            entity_id: scene.movie_night            # EDIT
+
+      - presets: tile.green
+        name: Play
+        icon: mdi:play-pause
+        tap_action:
+          action: media_player.media_play_pause
+          data:
+            entity_id: media_player.living_room     # EDIT
+
+      - presets: tile.slate
+        name: Night
+        icon: mdi:weather-night
+        tap_action:
+          action: scene.turn_on
+          data:
+            entity_id: scene.good_night             # EDIT
+
+  # Second page, reached from the "More" button above. The back arrow is added
+  # automatically by system_buttons.
+  scenes:
+    name: Scenes
+    buttons:
+      - presets: tile.amber
+        name: Morning
+        icon: mdi:weather-sunset-up
+        tap_action:
+          action: scene.turn_on
+          data:
+            entity_id: scene.morning                # EDIT
+
+      - presets: tile.blue
+        name: Away
+        icon: mdi:home-export-outline
+        tap_action:
+          action: scene.turn_on
+          data:
+            entity_id: scene.away                   # EDIT
+
+      - presets: tile.green
+        name: Relax
+        icon: mdi:sofa
+        tap_action:
+          action: scene.turn_on
+          data:
+            entity_id: scene.relax                  # EDIT
+
+      - presets: tile.red
+        name: Reboot HA
+        icon: mdi:restart
+        hold_action:                                # hold, so it can't be hit by accident
+          action: homeassistant.restart
