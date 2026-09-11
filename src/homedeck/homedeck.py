@@ -8,6 +8,7 @@ import time
 import traceback
 from dataclasses import asdict
 
+import psutil
 import yaml
 from dotenv import load_dotenv
 from strmdck.device import ButtonAction
@@ -259,7 +260,7 @@ class HomeDeck:
     def _device_is_alive(self) -> bool:
         ''' Send the keep-alive and report whether the device still accepts it. '''
         try:
-            self._device.keep_alive()
+            self._device.set_small_window_data(self._system_stats())
         except Exception as e:
             print('⚠️ keep_alive raised:', e)
             self._unresponsive_since = self._unresponsive_since or time.time()
@@ -413,6 +414,55 @@ class HomeDeck:
         button = self._configuration.get_button(self._current_page_id, index)
         if button:
             await button.trigger_action(self, interaction)
+
+    def _system_stats(self) -> dict:
+        ''' CPU, memory and temperature for the small window's STATS mode.
+
+        strmdck's keep_alive() sends zeroes for all of these, so STATS showed
+        nothing useful. The protocol's field list is fixed
+        ("mode|cpu|mem|time|gpu") and has no temperature slot, so the
+        temperature goes in the unused GPU field.
+        '''
+        stats = {'cpu': 0, 'mem': 0, 'gpu': 0}
+
+        try:
+            # Non-blocking: percentage since the previous call, which the
+            # one-second keep-alive loop makes meaningful.
+            stats['cpu'] = int(psutil.cpu_percent())
+            stats['mem'] = int(psutil.virtual_memory().percent)
+        except Exception:
+            pass
+
+        temperature = self._cpu_temperature()
+        if temperature is not None:
+            stats['gpu'] = temperature
+
+        return stats
+
+    def _cpu_temperature(self):
+        ''' CPU temperature in whole degrees Celsius, or None. '''
+        try:
+            sensors = psutil.sensors_temperatures()
+        except Exception:
+            sensors = {}
+
+        # Prefer a recognisable CPU sensor, else take the first reading going
+        for key in ('cpu_thermal', 'coretemp', 'k10temp', 'soc_thermal', 'cpu-thermal'):
+            readings = sensors.get(key)
+            if readings:
+                return int(readings[0].current)
+
+        for readings in sensors.values():
+            if readings:
+                return int(readings[0].current)
+
+        # DietPi on Orange Pi doesn't always expose a psutil sensor, so fall
+        # back to the raw thermal zone (millidegrees).
+        try:
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as fp:
+                return int(int(fp.read().strip()) / 1000)
+        except Exception:
+            return None
 
     def _cycle_small_window_mode(self):
         ''' Step the small window to the next mode and redraw it.
