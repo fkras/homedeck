@@ -136,6 +136,14 @@ pages:
         name: Humidity
         icon_color: 6EC6FF
 
+      # Outside temperature. Unlike the small window, a normal button can show
+      # any icon and any text you like.
+      - presets: $sensor.temperature
+        entity_id: sensor.outside_temperature       # EDIT
+        name: Outside
+        icon: mdi:thermometer-lines
+        icon_color: 6EC6FF
+
       - presets: tile.blue
         name: Cool
         icon: mdi:snowflake
@@ -144,15 +152,6 @@ pages:
           data:
             entity_id: climate.living_room          # EDIT
             temperature: 21
-
-      - presets: tile.red
-        name: Heat
-        icon: mdi:fire
-        tap_action:
-          action: climate.set_temperature
-          data:
-            entity_id: climate.living_room          # EDIT
-            temperature: 24
 
       - presets: tile.purple
         name: More

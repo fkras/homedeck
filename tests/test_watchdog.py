@@ -16,13 +16,16 @@ from homedeck.homedeck import DeviceUnresponsiveError, HomeDeck
 class FakeHidDevice:
     """Stands in for the hidapi handle."""
 
-    def __init__(self, *, raises=None):
+    def __init__(self, *, raises=None, write_raises=None):
         self.raises = raises
+        self.write_raises = write_raises
         self.writes = 0
         self.probes = 0
 
     def write(self, packet):
         self.writes += 1
+        if self.write_raises:
+            raise self.write_raises
         return len(packet)
 
     def get_product_string(self):
@@ -33,15 +36,19 @@ class FakeHidDevice:
 
 
 class FakeDevice:
+    """HomeDeck builds the small-window packet itself and writes it straight to
+    the HID handle, so there is no keep_alive() on the device to stub."""
+
+    _small_window_mode = None
+
     def __init__(self, hid_device=None, keep_alive_raises=None):
         self._hid_device = hid_device
         self.keep_alive_raises = keep_alive_raises
-        self.keep_alive_calls = 0
 
-    def keep_alive(self):
-        self.keep_alive_calls += 1
-        if self.keep_alive_raises:
-            raise self.keep_alive_raises
+    @property
+    def keep_alive_calls(self):
+        # The small-window packet is the keep-alive
+        return self._hid_device.writes if self._hid_device else 0
 
 
 def make_deck(device):
@@ -66,19 +73,20 @@ class TestHealthyDevice:
 
         assert device.keep_alive_calls == 1
 
-    def test_probe_draws_nothing(self):
-        """The health check must not write a protocol packet.
+    def test_probe_adds_no_extra_draw(self):
+        """The health check must not send a second small-window packet.
 
-        It used to re-send a small-window packet, which made the deck redraw
-        the clock area twice a second and flicker.
+        It used to re-send one on top of the keep-alive, which made the deck
+        redraw the clock area twice a second and flicker. Exactly one write per
+        tick is correct.
         """
         hid = FakeHidDevice()
         deck = make_deck(FakeDevice(hid))
 
         deck._device_is_alive()
 
-        assert hid.probes == 1
-        assert hid.writes == 0
+        assert hid.writes == 1      # the keep-alive itself, nothing more
+        assert hid.probes == 1      # liveness uses a descriptor read
 
 
 class TestUnresponsiveDevice:
@@ -88,8 +96,8 @@ class TestUnresponsiveDevice:
         assert deck._device_is_alive() is True   # tolerated at first
         assert deck._unresponsive_since is not None
 
-    def test_raising_keep_alive_starts_the_clock(self):
-        deck = make_deck(FakeDevice(FakeHidDevice(), keep_alive_raises=OSError('boom')))
+    def test_a_failing_write_starts_the_clock(self):
+        deck = make_deck(FakeDevice(FakeHidDevice(write_raises=OSError('boom'))))
 
         assert deck._device_is_alive() is True
         assert deck._unresponsive_since is not None

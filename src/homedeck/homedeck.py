@@ -21,7 +21,7 @@ from .elements import InteractionType, PageElement
 from .enums import SleepStatus
 from .event_bus import EventName, event_bus
 from .home_assistant import HomeAssistantWebSocket
-from .utils import deep_merge
+from .utils import deep_merge, local_now
 
 load_dotenv()
 HA_HOST = os.getenv('HA_HOST')
@@ -73,6 +73,9 @@ class HomeDeck:
 
     # Reconnect after the device has ignored writes for this many seconds
     DEVICE_TIMEOUT = 10
+
+    # Clock format the small window renders: "12H" or "24H"
+    CLOCK_FORMAT = '24H'
 
     # Slots beyond BUTTON_COUNT to blank explicitly. The D200's manifest has a
     # 14th entry ("3_2") that the official app writes and strmdck does not.
@@ -274,13 +277,7 @@ class HomeDeck:
     def _device_is_alive(self) -> bool:
         ''' Send the keep-alive and report whether the device still accepts it. '''
         try:
-            # Send the stats via strmdck's keep_alive() shape. NOTE: the
-            # payload strmdck builds ("mode|cpu|mem|time|gpu") is shorter than
-            # what the official app sends ("...|4|12H|" and a weekday for some
-            # modes), and sending the short form appears to disturb rendering,
-            # so this stays on the library's own call until the full format is
-            # implemented. See guides/reverse-engineering-usb.md.
-            self._device.keep_alive()
+            self._send_small_window()
         except Exception as e:
             print('⚠️ keep_alive raised:', e)
             self._unresponsive_since = self._unresponsive_since or time.time()
@@ -434,6 +431,45 @@ class HomeDeck:
         button = self._configuration.get_button(self._current_page_id, index)
         if button:
             await button.trigger_action(self, interaction)
+
+    def _send_small_window(self):
+        ''' Send the small window's periodic update, with real statistics.
+
+        strmdck's keep_alive() sends an empty dict, which defaults cpu, mem and
+        gpu to zero, so the STATS view showed nothing but zeroes. Its payload
+        builder is also short: a capture of the official Ulanzi app shows seven
+        fields, not five -
+
+            2|26|41|15:10:28|4|12H|          mode|cpu|mem|time|?|clock|weekday
+
+        - and sending the five-field form disturbed rendering. Build the full
+        payload here rather than going through strmdck.
+        '''
+        from strmdck.devices.ulanzi_d200 import CommandProtocol, PacketStruct
+
+        stats = self._system_stats()
+        now = local_now()
+
+        mode = getattr(self._device, '_small_window_mode', None)
+        mode_value = getattr(mode, 'value', 1)
+
+        payload = '|'.join([
+            str(mode_value),
+            str(stats['cpu']),
+            str(stats['mem']),
+            now.strftime('%H:%M:%S'),
+            str(stats['gpu']),      # the app varies this; temperature fits it
+            self.CLOCK_FORMAT,
+            '',                     # weekday, only populated for some modes
+        ])
+
+        packet = PacketStruct.build(dict(
+            command_protocol=CommandProtocol.OUT_SET_SMALL_WINDOW_DATA.value,
+            length=None,
+            data=payload.encode('utf-8'),
+        ))
+
+        self._device._hid_device.write(packet)
 
     def _system_stats(self) -> dict:
         ''' CPU, memory and temperature for the small window's STATS mode.
