@@ -35,32 +35,48 @@ class HomeDeck:
     class ConfigurationFileChangeHandler(FileSystemEventHandler):
         def __init__(self, deck: HomeDeck):
             self._deck = deck
-            self._file_path = os.path.abspath('assets/configuration.yml')
-            self._last_modified = 0
+            self._file_path = os.path.abspath(os.path.join('assets', 'configuration.yml'))
+
+        def _is_config(self, path) -> bool:
+            if not path:
+                return False
+
+            # Paths arrive as str or bytes depending on the platform
+            if isinstance(path, bytes):
+                path = path.decode('utf-8', errors='replace')
+
+            return os.path.abspath(path) == self._file_path
+
+        def _mark_dirty(self):
+            # Just flag it. The reload loop coalesces rapid saves, so unlike a
+            # guard here that swallows them, a second save moments after the
+            # first is never lost.
+            self._deck._need_reload_all = True
 
         def on_modified(self, event):
-            if event.src_path == self._file_path:
-                # Ignore events within 1 seconds
-                now = time.time()
-                if now - self._last_modified >= 1:
-                    self._last_modified = now
-                    self._deck._need_reload_all = True
+            if self._is_config(event.src_path):
+                self._mark_dirty()
 
-        '''
         def on_created(self, event):
-            if event.src_path == self._file_path:
-                self._device.reload_all()
+            if self._is_config(event.src_path):
+                self._mark_dirty()
 
-        def on_deleted(self, event):
-            if event.src_path == self._file_path:
-                raise ValueError('configuration.yml file deleted')
-        '''
+        def on_moved(self, event):
+            # Editors and atomic writers save to a temp file then rename it
+            # over the target, which arrives as a move, not a modify.
+            if self._is_config(getattr(event, 'dest_path', None)):
+                self._mark_dirty()
 
     # Coalesce bursts of Home Assistant state_changed events into one redraw
     STATE_CHANGE_DEBOUNCE = 0.1
 
     # Reconnect after the device has ignored writes for this many seconds
     DEVICE_TIMEOUT = 10
+
+    # How often to check whether configuration.yml changed
+    CONFIG_POLL_INTERVAL = 0.2
+    # Settle time before reading a config file that was just written
+    CONFIG_RELOAD_DEBOUNCE = 0.25
 
     def __init__(self, vendor_id: int = 0x2207, product_id: int = 0x0019):
         self._vendor_id = vendor_id
@@ -528,9 +544,12 @@ class HomeDeck:
 
         while True:
             if self._need_reload_all:
+                # Let a burst of events settle so a file still being written
+                # is read once, complete, rather than half-way through.
+                await asyncio.sleep(self.CONFIG_RELOAD_DEBOUNCE)
                 self.reload_all()
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.CONFIG_POLL_INTERVAL)
 
     def page_go_to(self, page_id: str, page_number: int = 1, append_stack=True):
         if not self._configuration.has_page(page_id):
