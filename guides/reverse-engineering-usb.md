@@ -262,6 +262,43 @@ Then expose it as a config key (`screensaver: false`) in
 `configuration.base.yml` and `configuration.schema.yml`, following how
 `brightness` is wired up.
 
+## Capturing the first-connection handshake
+
+The default screen (Ulanzi logo, name and URL) is what the deck ships with. The
+official app replaces it the first time it talks to the device — so the command
+that writes it is sent **at connection time**, not when you change a setting.
+A capture taken while clicking around in the app will never contain it.
+
+To catch it, the capture has to be running *before* the deck is plugged in:
+
+1. Close the Ulanzi app completely.
+2. Unplug the D200.
+3. Start the Wireshark/USBPcap capture on the root hub the deck will use.
+4. Plug the deck in. Wait for Windows to enumerate it (a few seconds).
+5. **Now** open the Ulanzi app and let it connect. Do nothing else.
+6. Stop the capture as soon as the deck's screen changes.
+
+That window — enumeration through first draw — is where the interesting
+traffic is. Scan it:
+
+```bash
+python3 tools/scan_d200.py firstconnect.pcapng
+```
+
+Expect a much larger capture than a settings change produces. Look for:
+
+- **`0x0001` (SET_BUTTONS) with a ZIP payload** early on — that is the app
+  replacing the default buttons, and it is the same command HomeDeck already
+  uses.
+- **Any command ID not in the known list**, especially one carrying image data
+  (`\x89PNG`, `\xff\xd8`) or a second ZIP. That is the candidate for whatever
+  owns the background layer.
+
+If the only thing the app sends is `0x0001`, that is itself a useful result: it
+means the default screen is replaced by ordinary button data, and the reason
+HomeDeck does not clear it is something about *how* it writes them rather than
+a missing command.
+
 ## If the capture comes up empty
 
 Some settings are written **once to firmware** and not re-sent on every launch.
