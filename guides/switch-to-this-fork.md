@@ -4,17 +4,43 @@ For a device already running upstream HomeDeck (installed with
 `guides/linux/install.sh`). Nothing is deleted — the switch is a `git remote`
 change, and you can go back with two commands.
 
-The official installer puts things here:
+## First: find your install
 
-| What | Where |
-|:--|:--|
-| Repo | `/app/homedeck` |
-| Virtualenv | `/app/homedeck-venv` |
-| Your config | `/app/homedeck/assets/configuration.yml` |
-| Your secrets | `/app/homedeck/.env` |
-| Autostart | a `@reboot` crontab entry running `server.py` |
+Paths differ depending on how HomeDeck was installed, so detect them rather than
+assuming:
 
-Adjust the paths below if yours differ. SSH into the Orange Pi to begin:
+```bash
+ls -d /opt/homedeck /app/homedeck 2>/dev/null            # the repo
+ls -d /opt/homedeck/.venv /app/homedeck-venv 2>/dev/null # the virtualenv
+crontab -l 2>/dev/null | grep -i homedeck                # crontab autostart?
+systemctl list-units --all 'homedeck*' --no-pager        # systemd autostart?
+```
+
+Two layouts are common:
+
+| | Manual install | `guides/linux/install.sh` |
+|:--|:--|:--|
+| Repo | `/opt/homedeck` | `/app/homedeck` |
+| Virtualenv | `/opt/homedeck/.venv` | `/app/homedeck-venv` |
+| Autostart | usually systemd | `@reboot` crontab |
+
+Set these once and the rest of the guide will paste as-is:
+
+```bash
+export HD=/opt/homedeck                # repo, from the check above
+export HD_PY=$HD/.venv/bin/python      # or /app/homedeck-venv/bin/python
+```
+
+Verify before continuing:
+
+```bash
+ls $HD/deck.py && $HD_PY --version
+```
+
+Your config lives at `$HD/assets/configuration.yml` and your secrets at
+`$HD/.env`. Neither is tracked by git, so the switch won't touch them.
+
+SSH into the Orange Pi to begin:
 
 ```bash
 ssh root@<orange-pi-ip>
@@ -27,8 +53,8 @@ ssh root@<orange-pi-ip>
 pkill -f server.py; pkill -f deck.py
 
 # Back up the two files that are yours, not the project's
-cp /app/homedeck/assets/configuration.yml ~/configuration.yml.bak
-cp /app/homedeck/.env ~/.env.bak
+cp $HD/assets/configuration.yml ~/configuration.yml.bak
+cp $HD/.env ~/.env.bak
 ```
 
 Both files are gitignored, so the switch won't touch them — the backup is
@@ -37,7 +63,7 @@ belt-and-braces.
 ## 2. Point the repo at this fork
 
 ```bash
-cd /app/homedeck
+cd $HD
 
 # Keep a reference to where you were, in case you want to go back
 git remote add upstream https://github.com/redphx/homedeck.git 2>/dev/null || true
@@ -63,9 +89,8 @@ Re-running `pip install -e .` just makes sure the metadata matches this branch �
 cheap, and it catches a dependency drift if one ever appears:
 
 ```bash
-source /app/homedeck-venv/bin/activate
-cd /app/homedeck
-pip install -e .
+cd $HD
+$HD_PY -m pip install -e .
 ```
 
 ## 4. Clear the icon cache once
@@ -74,7 +99,7 @@ Generated icons are now named by a stable hash instead of Python's per-process
 `hash()`. Old cached files can never be matched again, so delete them once:
 
 ```bash
-rm -rf /app/homedeck/.cache/icons/_generated
+rm -rf $HD/.cache/icons/_generated
 ```
 
 The cache rebuilds on first run and then persists across restarts — the first
@@ -82,7 +107,7 @@ start after this will be slower than the ones after it.
 
 ## 5. Turn on always-on + night dimming
 
-Edit `/app/homedeck/assets/configuration.yml` and replace the `sleep:` block:
+Edit `$HD/assets/configuration.yml` and replace the `sleep:` block:
 
 ```yaml
 brightness: 80
@@ -110,10 +135,10 @@ timedatectl set-timezone Europe/Zurich    # use your own zone
 date                                       # sanity-check the clock
 ```
 
-Also add it to `/app/homedeck/.env` so it survives regardless of system settings:
+Also add it to `$HD/.env` so it survives regardless of system settings:
 
 ```bash
-echo 'TIMEZONE="Europe/Zurich"' >> /app/homedeck/.env
+echo 'TIMEZONE="Europe/Zurich"' >> $HD/.env
 ```
 
 ## 6. Try it in the foreground first
@@ -121,9 +146,8 @@ echo 'TIMEZONE="Europe/Zurich"' >> /app/homedeck/.env
 Before touching autostart, watch it run:
 
 ```bash
-source /app/homedeck-venv/bin/activate
-cd /app/homedeck
-python deck.py
+cd $HD
+$HD_PY deck.py
 ```
 
 Expect `Device connected`, then `Authenticated successfully`, then the deck
@@ -148,12 +172,33 @@ crontab -l | grep -v homedeck | crontab -
 crontab -l          # confirm the homedeck line is gone
 ```
 
+The shipped unit files assume the `install.sh` layout (`/app/homedeck` +
+`/app/homedeck-venv`). If yours differs — e.g. `/opt/homedeck` with a `.venv` —
+rewrite the paths as you install them:
+
+```bash
+sed -e "s|/app/homedeck-venv/bin/python|$HD_PY|" \
+    -e "s|/app/homedeck|$HD|g" \
+    $HD/homedeck.service > /etc/systemd/system/homedeck.service
+
+# same for the API server unit, if you use it
+sed -e "s|/app/homedeck-venv/bin/python|$HD_PY|" \
+    -e "s|/app/homedeck|$HD|g" \
+    $HD/homedeck-server.service > /etc/systemd/system/homedeck-server.service
+```
+
+Check it landed correctly before enabling:
+
+```bash
+grep -E 'WorkingDirectory|ExecStart' /etc/systemd/system/homedeck.service
+```
+
 **Then pick one** — these are alternatives, not complements:
 
 **A. Deck only** (configure over SSH):
 
 ```bash
-cp /app/homedeck/homedeck.service /etc/systemd/system/
+# (skip the cp if you used the sed above)
 systemctl daemon-reload
 systemctl enable --now homedeck
 systemctl status homedeck
@@ -162,7 +207,7 @@ systemctl status homedeck
 **B. Deck + Home Assistant editing** (what upstream's crontab did):
 
 ```bash
-cp /app/homedeck/homedeck-server.service /etc/systemd/system/
+# (skip the cp if you used the sed above)
 systemctl daemon-reload
 systemctl enable --now homedeck-server
 systemctl status homedeck-server
@@ -194,12 +239,11 @@ journalctl -u homedeck -b --no-pager | tail -40
 ## Going back to upstream
 
 ```bash
-cd /app/homedeck
-git checkout main
+cd $HD
 git remote set-url origin https://github.com/redphx/homedeck.git
-git pull
-source /app/homedeck-venv/bin/activate && pip install -e .
-rm -rf /app/homedeck/.cache/icons/_generated
+git fetch origin && git reset --hard origin/main
+$HD_PY -m pip install -e .
+rm -rf $HD/.cache/icons/_generated
 systemctl restart homedeck
 ```
 
@@ -217,7 +261,7 @@ schema validation at boot. Run `python deck.py` in the foreground to see which
 line it objects to.
 
 **Screen still blanks** — confirm `sleep_timeout: 0` is set and that the file
-you edited is the one being read (`/app/homedeck/assets/configuration.yml`).
+you edited is the one being read (`$HD/assets/configuration.yml`).
 
 **Dimming at the wrong time** — check `date` on the Pi. The schedule follows the
 system clock, and a Pi without network time can be badly off.
