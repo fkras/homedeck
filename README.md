@@ -30,6 +30,8 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
+| Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
+| Fixed `if os.path.exists:` in `get_configuration()` | Missing parentheses meant the guard was always true, so a missing `configuration.yml` returned a 500 instead of empty content |
 
 ### Supported decks
 
@@ -388,6 +390,53 @@ buttons:
   - name: {{ states("light.living_room_light") }}
 ```
 
+
+### Editing the configuration from Home Assistant
+
+Instead of editing `assets/configuration.yml` over SSH, you can edit it from a
+panel inside Home Assistant using the official
+[HomeDeck Manager add-on](https://github.com/redphx/homedeck-home-assistant-addon).
+
+It is an Ingress add-on that finds decks on the LAN over mDNS and talks to
+`server.py` over HTTP — the deck does **not** need to be plugged into the Home
+Assistant machine. It gives you a Monaco YAML editor with live validation
+driven by this repo's schema (so `sleep.schedule` autocompletes and is checked
+as you type), plus start/stop buttons and a live log panel.
+
+To use it, run the API server on the SBC. Install it with the included
+[`homedeck-server.service`](homedeck-server.service):
+
+```bash
+sudo cp homedeck-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now homedeck-server
+```
+
+> [!IMPORTANT]
+> `server.py` **starts and manages `deck.py` itself** on boot, and the add-on's
+> Start/Stop buttons control that child process. So use **either**
+> `homedeck.service` **or** `homedeck-server.service`, not both:
+>
+> - Just a wall panel, configured over SSH → `homedeck.service`.
+> - Editing from Home Assistant → `homedeck-server.service` (it runs the deck for you).
+>
+> Running both is not harmful — `start_script()` checks for an existing
+> `deck.py` process first — but the Stop button won't be able to stop a deck
+> that systemd owns, and systemd will immediately restart it.
+
+Then in Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**,
+add `https://github.com/redphx/homedeck-home-assistant-addon`, then install
+"HomeDeck Manager".
+
+> [!NOTE]
+> The add-on is a **YAML editor**, not a drag-and-drop button designer — you get
+> schema validation and autocomplete, not a visual grid.
+
+> [!IMPORTANT]
+> Discovery needs `HEAD /v1/status` to return 200. Upstream registers that route
+> under a literal `/v{API_VERSION}/status` path, so discovery silently finds
+> nothing; this fork fixes it. The add-on also addresses devices by **IPv4 only**,
+> so give the SBC a static lease.
 
 ### Running as a service
 
