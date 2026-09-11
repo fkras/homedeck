@@ -16,16 +16,20 @@ from homedeck.homedeck import DeviceUnresponsiveError, HomeDeck
 class FakeHidDevice:
     """Stands in for the hidapi handle."""
 
-    def __init__(self, *, write_result=64, raises=None):
-        self.write_result = write_result
+    def __init__(self, *, raises=None):
         self.raises = raises
         self.writes = 0
+        self.probes = 0
 
     def write(self, packet):
         self.writes += 1
+        return len(packet)
+
+    def get_product_string(self):
+        self.probes += 1
         if self.raises:
             raise self.raises
-        return self.write_result
+        return 'Ulanzi Stream Controller D200'
 
 
 class FakeDevice:
@@ -48,17 +52,11 @@ def make_deck(device):
 
 
 class TestHealthyDevice:
-    def test_alive_when_writes_succeed(self):
-        deck = make_deck(FakeDevice(FakeHidDevice(write_result=1024)))
+    def test_alive_when_the_device_answers(self):
+        deck = make_deck(FakeDevice(FakeHidDevice()))
 
         assert deck._device_is_alive() is True
         assert deck._unresponsive_since is None
-
-    def test_alive_when_write_returns_none(self):
-        # Some hidapi bindings return None rather than a byte count
-        deck = make_deck(FakeDevice(FakeHidDevice(write_result=None)))
-
-        assert deck._device_is_alive() is True
 
     def test_keep_alive_is_actually_sent(self):
         device = FakeDevice(FakeHidDevice())
@@ -68,19 +66,26 @@ class TestHealthyDevice:
 
         assert device.keep_alive_calls == 1
 
+    def test_probe_draws_nothing(self):
+        """The health check must not write a protocol packet.
+
+        It used to re-send a small-window packet, which made the deck redraw
+        the clock area twice a second and flicker.
+        """
+        hid = FakeHidDevice()
+        deck = make_deck(FakeDevice(hid))
+
+        deck._device_is_alive()
+
+        assert hid.probes == 1
+        assert hid.writes == 0
+
 
 class TestUnresponsiveDevice:
-    def test_negative_write_starts_the_clock(self):
-        """hidapi returns -1 when the device stops accepting writes."""
-        deck = make_deck(FakeDevice(FakeHidDevice(write_result=-1)))
+    def test_failed_probe_starts_the_clock(self):
+        deck = make_deck(FakeDevice(FakeHidDevice(raises=OSError('no such device'))))
 
         assert deck._device_is_alive() is True   # tolerated at first
-        assert deck._unresponsive_since is not None
-
-    def test_raising_write_starts_the_clock(self):
-        deck = make_deck(FakeDevice(FakeHidDevice(raises=OSError('write error'))))
-
-        assert deck._device_is_alive() is True
         assert deck._unresponsive_since is not None
 
     def test_raising_keep_alive_starts_the_clock(self):
@@ -97,7 +102,7 @@ class TestUnresponsiveDevice:
 
     def test_gives_up_after_the_timeout(self):
         """This is the screensaver case: sustained silence, so reconnect."""
-        deck = make_deck(FakeDevice(FakeHidDevice(write_result=-1)))
+        deck = make_deck(FakeDevice(FakeHidDevice(raises=OSError('gone'))))
 
         deck._device_is_alive()
         # Backdate past the timeout instead of sleeping
@@ -107,14 +112,14 @@ class TestUnresponsiveDevice:
 
     def test_recovers_before_the_timeout(self):
         """A brief hiccup must not trigger a reconnect."""
-        hid = FakeHidDevice(write_result=-1)
+        hid = FakeHidDevice(raises=OSError('busy'))
         deck = make_deck(FakeDevice(hid))
 
         deck._device_is_alive()
         assert deck._unresponsive_since is not None
 
         # Device starts answering again
-        hid.write_result = 64
+        hid.raises = None
         assert deck._device_is_alive() is True
         assert deck._unresponsive_since is None
 
@@ -123,20 +128,10 @@ class TestKeepAliveLoop:
     @pytest.mark.asyncio
     async def test_raises_so_the_supervisor_reconnects(self):
         """_setup() catches this and runs its reconnect path."""
-        deck = make_deck(FakeDevice(FakeHidDevice(write_result=-1)))
+        deck = make_deck(FakeDevice(FakeHidDevice(raises=OSError('gone'))))
         deck._is_ready = True
         deck._configuration = None
         deck._unresponsive_since = time.time() - (HomeDeck.DEVICE_TIMEOUT + 1)
 
         with pytest.raises(DeviceUnresponsiveError):
             await deck._keep_alive()
-
-
-class TestKeepAlivePacket:
-    def test_builds_a_valid_packet(self):
-        deck = make_deck(FakeDevice(FakeHidDevice()))
-
-        packet = deck._keep_alive_packet()
-
-        assert packet[:2] == b'\x7c\x7c'   # protocol magic
-        assert len(packet) == 1024

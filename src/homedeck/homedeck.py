@@ -266,7 +266,7 @@ class HomeDeck:
         else:
             # strmdck writes asynchronously and hides failures, so a clean
             # return is not proof of life. Check the HID handle separately.
-            if self._hid_write_ok():
+            if self._hid_is_responsive():
                 self._unresponsive_since = None
                 return True
 
@@ -281,33 +281,26 @@ class HomeDeck:
         print(f'⚠️ Device not responding ({elapsed:.0f}s)')
         return True
 
-    def _hid_write_ok(self) -> bool:
-        ''' Probe the underlying HID handle. True when it still accepts writes. '''
+    def _hid_is_responsive(self) -> bool:
+        ''' Check the device still answers, without drawing anything.
+
+        Deliberately does NOT send a protocol packet. An earlier version
+        re-sent a small-window packet here, which made the deck redraw the
+        clock area a second time every second and flicker visibly. Querying a
+        string descriptor exercises the same USB path without touching the
+        display.
+        '''
         hid_device = getattr(self._device, '_hid_device', None)
         if not hid_device:
             return False
 
         try:
-            # A zero-length write is rejected by hidapi, so re-send the
-            # small-window packet the keep-alive already uses; it is harmless
-            # to repeat and is the cheapest packet the protocol has.
-            written = hid_device.write(self._keep_alive_packet())
+            hid_device.get_product_string()
         except Exception as e:
-            print('⚠️ HID write failed:', e)
+            print('⚠️ Device did not answer:', e)
             return False
 
-        # hidapi returns -1 on failure and the byte count on success
-        return written is None or written >= 0
-
-    def _keep_alive_packet(self) -> bytes:
-        ''' The packet strmdck sends for keep_alive, rebuilt here for probing. '''
-        from strmdck.devices.ulanzi_d200 import CommandProtocol, PacketStruct
-
-        return PacketStruct.build(dict(
-            command_protocol=CommandProtocol.OUT_SET_SMALL_WINDOW_DATA.value,
-            length=None,
-            data=b'\x00',
-        ))
+        return True
 
     def _update_sleep_status(self):
         ''' Re-evaluate idle timeouts and the time-of-day schedule once per tick. '''
