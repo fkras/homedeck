@@ -9,8 +9,8 @@ Type=simple
 # server.py calls load_dotenv(), which reads .env from this directory.
 # Deliberately no EnvironmentFile=: systemd would keep the surrounding quotes
 # in values like HA_HOST="ws://..." that python-dotenv strips.
-WorkingDirectory=/opt/homedeck
-ExecStart=/opt/homedeck/.venv/bin/python -u /opt/homedeck/server.py
+WorkingDirectory=/app/homedeck
+ExecStart=/app/homedeck-venv/bin/python -u /app/homedeck/server.py
 
 Restart=always
 RestartSec=5

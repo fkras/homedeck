@@ -446,8 +446,12 @@ add `https://github.com/redphx/homedeck-home-assistant-addon`, then install
 To start on boot and recover automatically after a power loss, USB replug, or a
 Home Assistant restart, install the included [`homedeck.service`](homedeck.service).
 
-It assumes the project is at `/opt/homedeck` with a virtualenv at
-`/opt/homedeck/.venv` — edit `WorkingDirectory` and `ExecStart` if yours differs.
+It assumes the layout created by [`guides/linux/install.sh`](guides/linux/install.sh) —
+the repo at `/app/homedeck` and the virtualenv at `/app/homedeck-venv`. Edit
+`WorkingDirectory` and `ExecStart` if yours differs.
+
+Already running upstream HomeDeck? See
+[Switching an existing install to this fork](guides/switch-to-this-fork.md).
 
 ```bash
 sudo cp homedeck.service /etc/systemd/system/homedeck.service

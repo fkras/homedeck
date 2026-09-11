@@ -11,8 +11,8 @@ Type=simple
 # deck.py calls load_dotenv(), which reads .env from this directory.
 # Deliberately no EnvironmentFile=: systemd would keep the surrounding quotes
 # in values like HA_HOST="ws://..." that python-dotenv strips.
-WorkingDirectory=/opt/homedeck
-ExecStart=/opt/homedeck/.venv/bin/python -u /opt/homedeck/deck.py
+WorkingDirectory=/app/homedeck
+ExecStart=/app/homedeck-venv/bin/python -u /app/homedeck/deck.py
 
 # The D200 can take a moment to enumerate over USB after a cold boot, and
 # Home Assistant may still be starting, so always come back up.
