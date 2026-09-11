@@ -20,6 +20,7 @@ class IconSource(Enum):
     TEXT = 'text'
     MATERIAL_DESIGN = 'mdi'
     PHOSPHOR = 'pi'
+    CUSTOM_BRAND = 'cbi'
 
 
 class PhosphorIconVariant:

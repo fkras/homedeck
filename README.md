@@ -30,6 +30,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
+| Added the `cbi:` icon source | Brand logos for devices and services (Spotify, Sonos, IKEA, Tesla, …), which neither MDI nor Phosphor covers |
 | Writes the deck's 14th manifest slot | The official app sends 14 slots keyed `{col}_{row}`, ending with `3_2`; strmdck stops at 13, so that slot kept whatever the firmware drew there — the Ulanzi logo and URL behind the small window |
 | Watchdog reconnects an unresponsive deck | strmdck swallows every write error, so if the deck stops accepting writes (notably when the D200's own firmware screensaver takes over) HomeDeck kept sending keep-alives into a void forever |
 | Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
@@ -321,7 +322,7 @@ tap_action:
 
 | Property      | Description | Default   | Type | Template support |
 |:--------------|:------------|:----------|:-----|:-----------------|
-| `icon`        | - `none`: no icon<br>- `local:<path>`: path to the local icon file. It can be either an absolute path (e.g. `local:/icons/test.png`) or a relative path to the `assets/icons` folder (e.g. `local:test.png`)<br>- `url:<url>`: URL to the external image<br>- `mdi:<icon>`: icon from [Material Design Icons](https://pictogrammers.com/library/mdi/), e.g. `mdi:lightbulb`<br>- `pi:<icon>`: icon from [Phosphor Icons](https://phosphoricons.com), e.g. `pi:lightbulb`  | `none` | `str` | ✅ |
+| `icon`        | - `none`: no icon<br>- `cbi:<icon>`: brand logo from [custom-brand-icons](https://github.com/elax46/custom-brand-icons), e.g. `cbi:spotify`<br>- `local:<path>`: path to the local icon file. It can be either an absolute path (e.g. `local:/icons/test.png`) or a relative path to the `assets/icons` folder (e.g. `local:test.png`)<br>- `url:<url>`: URL to the external image<br>- `mdi:<icon>`: icon from [Material Design Icons](https://pictogrammers.com/library/mdi/), e.g. `mdi:lightbulb`<br>- `pi:<icon>`: icon from [Phosphor Icons](https://phosphoricons.com), e.g. `pi:lightbulb`  | `none` | `str` | ✅ |
 | `icon_variant` | Icon's variant. Only available when using [Phosphor Icons](https://phosphoricons.com). | `regular` | - `thin`<br>- `light`<br>- `regular`<br>- `bold`<br>- `fill`<br>- `duotone` | ✅ |
 | `icon_size`   | Icon's size, in pixel<br>-`<width> <height>`: set width and height, e.g. `icon_size: 100 120` <br>- `<size>`: set both width and height to the same value, e.g. `icon_size: 100` is the same as `icon_size: 100 100`<br>- When width or height is `0`, its value will be calculated based on the image's ratio | `0` | `int`<br>`str` | ✅ |
 | `icon_padding` | Padding around the icon | `0` | `int` | ✅ |
@@ -395,6 +396,32 @@ buttons:
   - name: {{ states("light.living_room_light") }}
 ```
 
+
+### Brand icons
+
+Logos for devices, services and appliances come from
+[elax46/custom-brand-icons](https://github.com/elax46/custom-brand-icons) (1737
+icons, MIT) using the `cbi:` prefix:
+
+```yaml
+- entity_id: media_player.spotify
+  icon: cbi:spotify
+  icon_color: 1ED760
+```
+
+They are fetched through the Iconify API, cached locally like any other icon,
+and recolour with `icon_color` as usual.
+
+Names are not always what you would guess - `cbi:philips-hue` does not exist,
+for example - so search first:
+
+```bash
+python3 tools/find_icon.py hue
+python3 tools/find_icon.py sonos
+```
+
+The underlying logos are trademarks of their owners; the pack's licence covers
+its own packaging, not the brands.
 
 ### Actions must match the entity's domain
 

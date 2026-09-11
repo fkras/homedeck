@@ -209,7 +209,7 @@ $defs:
         description: The main icon shown on the button
         oneOf:
           - type: string
-            pattern: '^(local|mdi|pi):'
+            pattern: '^(local|mdi|pi|cbi):'
           - type: string
             format: uri
             pattern: 'https?:\/\/.*$'

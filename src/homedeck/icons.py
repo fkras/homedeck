@@ -109,6 +109,8 @@ class Icon:
                 icon = MaterialDesignIconLayer(layer)
             elif icon_source == IconSource.PHOSPHOR:
                 icon = PhosphorIconLayer(layer)
+            elif icon_source == IconSource.CUSTOM_BRAND:
+                icon = CustomBrandIconLayer(layer)
             elif icon_source == IconSource.TEXT:
                 icon = TextIconLayer(layer)
             elif icon_source == IconSource.URL:
@@ -416,6 +418,20 @@ class PhosphorIconLayer(RemoteSvgIconLayer):
     @property
     def download_url(self):
         return f'https://raw.githubusercontent.com/phosphor-icons/core/refs/heads/main/raw/{self._icon["icon_variant"]}/{self._name}.svg'
+
+
+class CustomBrandIconLayer(RemoteSvgIconLayer):
+    ''' Brand logos from elax46/custom-brand-icons (MIT).
+
+    Fetched through the Iconify API rather than raw GitHub: it normalises the
+    names (the repo's filenames are case-sensitive, so "2N.svg" exists but
+    "2n.svg" 404s), serves the paths with fill="currentColor" so icon_color
+    works, and is built for this access pattern.
+    '''
+
+    @property
+    def download_url(self):
+        return f'https://api.iconify.design/cbi/{self._name}.svg'
 
 
 class IconProvider:
