@@ -260,7 +260,13 @@ class HomeDeck:
     def _device_is_alive(self) -> bool:
         ''' Send the keep-alive and report whether the device still accepts it. '''
         try:
-            self._device.set_small_window_data(self._system_stats())
+            # Send the stats via strmdck's keep_alive() shape. NOTE: the
+            # payload strmdck builds ("mode|cpu|mem|time|gpu") is shorter than
+            # what the official app sends ("...|4|12H|" and a weekday for some
+            # modes), and sending the short form appears to disturb rendering,
+            # so this stays on the library's own call until the full format is
+            # implemented. See guides/reverse-engineering-usb.md.
+            self._device.keep_alive()
         except Exception as e:
             print('⚠️ keep_alive raised:', e)
             self._unresponsive_since = self._unresponsive_since or time.time()

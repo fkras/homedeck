@@ -38,9 +38,7 @@ class FakeDevice:
         self.keep_alive_raises = keep_alive_raises
         self.keep_alive_calls = 0
 
-    def set_small_window_data(self, data):
-        # HomeDeck sends the stats payload itself rather than calling
-        # strmdck's keep_alive(), which only ever sent zeroes.
+    def keep_alive(self):
         self.keep_alive_calls += 1
         if self.keep_alive_raises:
             raise self.keep_alive_raises
@@ -66,7 +64,7 @@ class TestHealthyDevice:
 
         deck._device_is_alive()
 
-        assert device.keep_alive_calls == 1   # the stats packet went out
+        assert device.keep_alive_calls == 1
 
     def test_probe_draws_nothing(self):
         """The health check must not write a protocol packet.

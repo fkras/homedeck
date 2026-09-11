@@ -1,9 +1,10 @@
-"""Tests for the small window's STATS mode.
+"""Tests for the system-stats helpers.
 
-strmdck's keep_alive() sends zeroes for cpu/mem/gpu, so STATS showed nothing
-useful. HomeDeck fills them in instead. The protocol's field list is fixed
-("mode|cpu|mem|time|gpu") with no temperature slot, so the CPU temperature goes
-in the otherwise-unused GPU field.
+These collect CPU, memory and temperature for the small window's STATS mode.
+They are not wired into the keep-alive yet: a capture of the official Ulanzi
+app shows its small-window payload carries more fields than strmdck builds, and
+sending the short form disturbs rendering. See
+guides/reverse-engineering-usb.md.
 """
 
 import builtins
