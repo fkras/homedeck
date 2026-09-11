@@ -426,7 +426,9 @@ To actually stop it, in rough order of preference:
 4. Capture the USB traffic while the official app sets a screensaver and add the
    command to `strmdck`. The packet framing is simple (`7c7c`, 2-byte command,
    4-byte little-endian length, 1016-byte payload), so a new command ID drops
-   straight in.
+   straight in. See
+   [Reverse-engineering D200 commands](guides/reverse-engineering-usb.md) and
+   [`tools/scan_d200.py`](tools/scan_d200.py).
 
 ### Editing the configuration from Home Assistant
 
