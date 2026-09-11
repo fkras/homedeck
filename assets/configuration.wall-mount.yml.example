@@ -1,0 +1,75 @@
+# Wall-mounted D200: always on, dimmed overnight.
+#
+# Copy to assets/configuration.yml and edit the entity IDs:
+#   cp assets/configuration.wall-mount.yml.example assets/configuration.yml
+#
+# The screen never blanks. It runs at full brightness during the day, drops to
+# `schedule.brightness` between 22:00 and 06:00, and briefly returns to full
+# brightness when you press a button at night before settling back down.
+
+# Daytime brightness (1-100)
+brightness: 80
+
+sleep:
+  # Never blank the screen. This is what makes the deck always-on.
+  sleep_timeout: 0
+
+  # Seconds of inactivity before settling to the dim level.
+  # Only has a visible effect inside a `schedule` window.
+  dim_timeout: 30
+
+  # Fallback dim level when no schedule window sets one.
+  dim_brightness: 10
+
+  # Night window. Times are local to the Pi, honoring TIMEZONE in .env.
+  # Set TIMEZONE (e.g. Europe/Zurich) and make sure the Pi's clock is correct.
+  schedule:
+    - from: '22:00'
+      to: '06:00'
+      brightness: 10
+
+label_style:
+  align: bottom
+  color: FFFFFF
+  font: 8
+  show_title: true
+  size: 9
+  weight: 80
+
+system_buttons:
+  $page.back:
+    position: 1
+  $page.previous:
+    position: 2
+  $page.next:
+    position: 3
+
+presets: {}
+
+pages:
+  $root:
+    buttons:
+      # --- Lights ---
+      - entity_id: light.living_room
+        presets: $light
+      - entity_id: light.kitchen
+        presets: $light
+
+      # --- Sensors ---
+      - entity_id: sensor.living_room_temperature
+        presets: $sensor.temperature
+      - entity_id: sensor.living_room_humidity
+        presets: $sensor.humidity
+
+      # --- Scenes ---
+      - entity_id: scene.movie_night
+        icon: mdi:movie-open
+        name: Movie
+        tap_action:
+          action: scene.turn_on
+
+      - entity_id: scene.good_night
+        icon: mdi:weather-night
+        name: Good Night
+        tap_action:
+          action: scene.turn_on

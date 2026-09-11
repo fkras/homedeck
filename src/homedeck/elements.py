@@ -5,8 +5,6 @@ import shutil
 from copy import deepcopy
 from typing import Dict
 
-from deepdiff import DeepDiff
-
 from .dataclasses import (
     PageButtonActionConfig,
     PageButtonConfig,
@@ -17,6 +15,17 @@ from .enums import ButtonElementAction, InteractionType
 from .icons import icon_provider
 from .template import render_template
 from .utils import deep_merge
+
+
+def _is_equal(left, right) -> bool:
+    ''' Structural equality for button/page config data.
+
+    DeepDiff computes a full difference report just so callers can ask "did
+    anything change?". That is far more work than needed and it runs for every
+    button on every redraw. These structures are plain dicts/lists/scalars
+    parsed from YAML, so plain == is both correct and much faster.
+    '''
+    return left == right
 
 
 class ButtonElement:
@@ -192,8 +201,7 @@ class PageElement:
             old_button = old_raws.get(index)
             new_button = new_raws.get(index + (page_number - 1) * buttons_per_page)
 
-            changed = DeepDiff(old_button, new_button)
-            if not changed:
+            if _is_equal(old_button, new_button):
                 continue
 
             # Set changed button
@@ -213,8 +221,7 @@ class PageElement:
         if not other or self._page_config != other.page_config:
             return False
 
-        diff = DeepDiff(self.button_raws, other.button_raws)
-        return not diff
+        return _is_equal(self.button_raws, other.button_raws)
 
     @staticmethod
     def generate(buttons: Dict[int, ButtonElement]):

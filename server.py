@@ -213,8 +213,10 @@ async def get_configuration():
     configuration_path = os.path.join(current_dir, 'assets', 'configuration.yml')
     content = ''
 
-    if os.path.exists:
-        with open(configuration_path, 'r') as fp:
+    # NB: os.path.exists(path), not os.path.exists — the bare function object is
+    # always truthy, which turned a missing config file into a 500.
+    if os.path.exists(configuration_path):
+        with open(configuration_path, 'r', encoding='utf-8') as fp:
             content = fp.read()
 
     return {'data': {'content': content}}
@@ -289,9 +291,19 @@ async def websocket_endpoint(websocket: WebSocket):
             websocket_clients.discard(websocket)
 
 
-@app.head('/v{API_VERSION}/status')
-async def status_endpoint():
+@app.head(f'/v{API_VERSION}/status')
+async def status_head_endpoint():
     return Response(status_code=200)
+
+
+@app.get(f'/v{API_VERSION}/status')
+async def status_get_endpoint():
+    """Report whether the deck script is currently running."""
+    is_running = is_script_running()
+    return {
+        'status': 'running' if is_running else 'stopped',
+        'deck_connected': is_running,
+    }
 
 
 if __name__ == "__main__":

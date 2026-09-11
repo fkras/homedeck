@@ -8,6 +8,14 @@ $defs:
     type: string
     pattern: '({{.*?}}|{%.*?%})'
 
+  TimeOfDay:
+    description: Time of day in 24-hour "HH:MM" format, e.g. "22:00". "24:00" means end of day.
+    type: string
+    pattern: '^([01]?[0-9]|2[0-4]):[0-5][0-9]$'
+    examples:
+      - '22:00'
+      - '06:30'
+
   IntPercentage:
     description: Integer value between 0 and 100 (percentages)
     type: integer
@@ -501,6 +509,13 @@ properties:
       - dim_brightness: 20
         dim_timeout: 30
         sleep_timeout: 300
+      - dim_brightness: 10
+        dim_timeout: 30
+        sleep_timeout: 0
+        schedule:
+          - from: '22:00'
+            to: '06:00'
+            brightness: 10
     oneOf:
       - type: 'null'
       - type: object
@@ -511,12 +526,34 @@ properties:
             title: Brightness level when the device is idle before sleep
           dim_timeout:
             type: integer
-            minimum: 1
-            title: Number of seconds before dimming the display
+            minimum: 0
+            title: Number of seconds before dimming the display. 0 disables dimming.
           sleep_timeout:
             type: integer
-            minimum: 1
-            title: Number of seconds before the display turns off
+            minimum: 0
+            title: Number of seconds before the display turns off. 0 keeps the display always on.
+          schedule:
+            type: array
+            title: Time-of-day brightness windows, e.g. dimming overnight
+            description: >-
+              Each entry caps the brightness between "from" and "to" (local time,
+              24h "HH:MM"). Windows may wrap midnight. The first matching entry wins.
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                from:
+                  $ref: '#/$defs/TimeOfDay'
+                  title: Start of the window (inclusive)
+                to:
+                  $ref: '#/$defs/TimeOfDay'
+                  title: End of the window (exclusive)
+                brightness:
+                  $ref: '#/$defs/IntPercentage'
+                  title: Brightness while inside the window. Defaults to dim_brightness.
+              required:
+                - from
+                - to
         required:
           - dim_brightness
           - dim_timeout

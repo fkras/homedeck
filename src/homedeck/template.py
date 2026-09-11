@@ -1,10 +1,24 @@
 import functools as ft
 import traceback
+from functools import lru_cache
 from typing import Union
 
 import jinja2
 
 env = jinja2.Environment()
+
+
+# Templates come from the configuration file, so the set of distinct sources is
+# small and bounded. Compiling them is expensive and happens on every redraw,
+# so cache the compiled form and only re-render.
+@lru_cache(maxsize=512)
+def _compile_template(source: str):
+    return env.from_string(source)
+
+
+# Track which template sources have already produced a traceback, so a broken
+# template logs once instead of on every single redraw.
+_logged_template_errors = set()
 
 
 def _to_float(s: str) -> Union[float, bool]:
@@ -99,7 +113,7 @@ def render_template(source, all_states: dict, entity_id=None):
         return [render_template(v, all_states, entity_id=entity_id) for v in source]
     elif isinstance(source, str):
         try:
-            return env.from_string(source).render(
+            return _compile_template(source).render(
                 state_attr=ft.partial(_state_attr, all_states=all_states),
                 is_state=ft.partial(_is_state, all_states=all_states),
                 states=ft.partial(_states, all_states=all_states),
@@ -110,9 +124,16 @@ def render_template(source, all_states: dict, entity_id=None):
                 self_states=ft.partial(_self_states, entity_id=entity_id, all_states=all_states),
                 self_binary_text=ft.partial(_self_binary_text, entity_id=entity_id, all_states=all_states),
             ).strip()
-        except Exception:
-            print('⚠️', source)
-            traceback.print_exc()
+        except Exception as e:
+            # Log the full traceback once per broken template, then stay quiet:
+            # this runs on every redraw and would otherwise flood the journal.
+            if source not in _logged_template_errors:
+                _logged_template_errors.add(source)
+                print('⚠️ Template error:', source)
+                traceback.print_exc()
+            else:
+                print(f'⚠️ Template error: {source[:80]!r} | {e}')
+
             return '#BUG'
 
     return source

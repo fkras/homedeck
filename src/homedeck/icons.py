@@ -1,7 +1,8 @@
 import asyncio
+import hashlib
 import logging
 import os
-import shutil
+import time
 from abc import ABC, abstractmethod
 from dataclasses import fields
 from typing import Dict, List, Tuple, Union
@@ -26,9 +27,57 @@ logging.basicConfig(level=logging.INFO)
 ENV_ENABLE_CACHE = int(os.getenv('ENABLE_CACHE', 1)) != 0
 CACHE_ICONS_DIR = os.path.join('.cache', 'icons')
 CACHE_GENERATED_DIR = os.path.join(CACHE_ICONS_DIR, '_generated')
-# Remove _generated directory when the script starts
-if os.path.exists(CACHE_GENERATED_DIR):
-    shutil.rmtree(CACHE_GENERATED_DIR)
+
+# Generated icons are named after a stable hash of the layers that produced
+# them, so the cache survives a restart instead of being rebuilt every boot.
+# That matters a lot on slow boards: rasterizing every icon at startup takes
+# seconds. Stale entries are pruned by age rather than wiped wholesale.
+CACHE_MAX_AGE_DAYS = int(os.getenv('CACHE_MAX_AGE_DAYS', 30))
+
+
+def stable_hash(value: str) -> str:
+    ''' Process-independent hash.
+
+    Python's built-in hash() is salted per process (PYTHONHASHSEED), so
+    filenames built from it never match after a restart and the cache is
+    always cold. SHA-1 truncated to 16 hex chars is stable and collision-safe
+    enough for cache keys.
+    '''
+    return hashlib.sha1(value.encode('utf-8')).hexdigest()[:16]
+
+
+def prune_generated_cache(max_age_days: int = CACHE_MAX_AGE_DAYS):
+    ''' Delete generated icons that haven't been used recently. '''
+    if not os.path.isdir(CACHE_GENERATED_DIR) or max_age_days <= 0:
+        return
+
+    cutoff = time.time() - (max_age_days * 86400)
+    removed = 0
+    for name in os.listdir(CACHE_GENERATED_DIR):
+        path = os.path.join(CACHE_GENERATED_DIR, name)
+        try:
+            # mtime, not atime: most Linux mounts use relatime, which makes
+            # atime too coarse to tell a used icon from an abandoned one.
+            # touch_cache_file() bumps mtime whenever an icon is served.
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            continue
+
+    if removed:
+        print(f'🧹 Pruned {removed} stale cached icon(s)')
+
+
+def touch_cache_file(path: str):
+    ''' Mark a cached icon as recently used so pruning spares it. '''
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+prune_generated_cache()
 
 
 class Icon:
@@ -82,7 +131,10 @@ class Icon:
         os.makedirs(CACHE_GENERATED_DIR, exist_ok=True)
         self._generated_path = os.path.join(CACHE_GENERATED_DIR, self.generated_filename())
 
-        if not os.path.exists(self._generated_path):
+        if os.path.exists(self._generated_path):
+            # Already composed on a previous run: keep it from being pruned
+            touch_cache_file(self._generated_path)
+        else:
             for icon in self._icon_layers:
                 layer_img = icon.get_image()
                 if layer_img:
@@ -162,7 +214,8 @@ class Icon:
             icon['icon_offset'] = normalize_tuple(icon['icon_offset'])
 
     def generated_filename(self):
-        return f'test-{hash(tuple(self._icon_layers))}.png'
+        combined = '-'.join(layer.cache_key for layer in self._icon_layers)
+        return f'icon-{stable_hash(combined)}.png'
 
 
 class IconLayer(ABC):
@@ -190,16 +243,21 @@ class IconLayer(ABC):
         return os.path.exists(self._original_file_path)
 
     def __hash__(self):
-        if not self._hash:
-            icon_fields = list(self._icon.keys())
-            sorted_fields = {key: self._icon[key] for key in icon_fields}
-            joined = '-'.join([f'{key}{str(value).upper()}' for key, value in sorted_fields.items()])
-            self._hash = hash('-'.join([self._icon['icon_source'].value, self._name, joined]))
+        return hash(self.cache_key)
 
-        return self._hash * (1 if self.is_available() else -1)
+    @property
+    def cache_key(self) -> str:
+        ''' Stable identity of this layer, usable as a filename across restarts. '''
+        if not self._hash:
+            # Sort the fields so dict ordering can't change the key
+            sorted_fields = {key: self._icon[key] for key in sorted(self._icon.keys())}
+            joined = '-'.join([f'{key}{str(value).upper()}' for key, value in sorted_fields.items()])
+            self._hash = stable_hash('-'.join([self._icon['icon_source'].value, self._name, joined]))
+
+        return f'{self._hash}{"" if self.is_available() else "-na"}'
 
     def generated_filename(self) -> str:
-        return f'{self._icon["icon_source"].value}-{self._name}-{self.__hash__()}.png'
+        return f'{self._icon["icon_source"].value}-{self._name}-{self.cache_key}.png'
 
     @property
     def original_file_path(self):
@@ -212,7 +270,9 @@ class IconLayer(ABC):
     def get_image(self):
         if self._is_generated or ENV_ENABLE_CACHE and os.path.exists(self._generated_path):
             try:
-                return Image.open(self._generated_path).convert('RGBA')
+                image = Image.open(self._generated_path).convert('RGBA')
+                touch_cache_file(self._generated_path)
+                return image
             except Exception:
                 return None
 

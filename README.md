@@ -5,11 +5,33 @@
 
 A lightweight Python library to control Home Assistant using Stream Deck-like devices. It's designed to run on a less powerful Linux SBC (like Raspberry Pi Zero 2W, OrangePi Zero 2W...) with a deck connected so you can put it anywhere in the house.
 
+> [!NOTE]
+> This is a fork of [redphx/homedeck](https://github.com/redphx/homedeck) with additions aimed at **wall-mounted, always-on** decks. See [Changes in this fork](#changes-in-this-fork).
+
 ### Features
 - ✅ Easy to use, syntax is similar to Home Assistant and CSS
 - 🛠️ Highly customizable with YAML configuration
 - 📝 Template support for advanced customization
+- 🌙 Time-of-day brightness schedule — keep the screen always on, dim it overnight
+- ⚡ Icon and template caching for faster redraws on low-power SBCs
 - 🧩 [Home Assistant Add-on support](https://github.com/redphx/homedeck-home-assistant-addon)
+
+### Changes in this fork
+
+| Change | Why |
+|:-------|:----|
+| [`sleep.schedule`](#sleep) — time-of-day brightness windows | Keep a wall-mounted deck always on but dimmed overnight, instead of letting it blank out |
+| `sleep_timeout: 0` / `dim_timeout: 0` now mean "never" | Previously the schema required `>= 1`, so "never sleep" wasn't expressible |
+| Compiled Jinja templates are cached | Templates were recompiled on every state change (~79x faster rendering) |
+| Button comparison no longer uses `DeepDiff` | `DeepDiff` built a full diff report just to answer "did this change?" (~1500x faster) |
+| Generated icons now use a stable hash and survive restarts | Filenames were built from Python's `hash()`, which is randomized per process, so the cache never hit after a restart |
+| Home Assistant state changes are debounced (100ms) | A scene touching several entities emitted a burst of events and forced one redraw each |
+| `optipng` is off by default (`ENABLE_OPTIPNG=1` re-enables) | It saved a little disk space but cost hundreds of ms per icon on an SBC |
+| Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
+| Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
+| Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
+| Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
+| Fixed `if os.path.exists:` in `get_configuration()` | Missing parentheses meant the guard was always true, so a missing `configuration.yml` returned a 500 instead of empty content |
 
 ### Supported decks
 
@@ -30,6 +52,22 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 
 1. Rename a `.env.example` to `.env` and follow the instructions in the file.
 2. Rename a `assets/configuration.yml.example` to `assets/configuration.yml` and start editing.
+   For a wall-mounted always-on deck, start from `assets/configuration.wall-mount.yml.example` instead.
+
+#### Environment variables
+
+| Variable | Description | Default |
+|:---------|:------------|:--------|
+| `HA_HOST` | Home Assistant websocket URL, e.g. `ws://192.168.0.31:8123` | |
+| `HA_ACCESS_TOKEN` | Long-lived access token | |
+| `TIMEZONE` | Timezone used by `sleep.schedule`, e.g. `Europe/Zurich` | system timezone |
+| `MDNS_SERVICE_ID` | mDNS identifier, unique on the local network. Empty = use IP. | |
+| `ENABLE_CACHE` | Cache generated icons. `0` disables. | `1` |
+| `CACHE_MAX_AGE_DAYS` | Prune generated icons unused for this many days. `0` keeps forever. | `30` |
+| `ENABLE_OPTIPNG` | Run `optipng` on generated icons. Slow on SBCs. | `0` |
+
+> [!TIP]
+> If `homeassistant.local` doesn't resolve on your SBC, use the IP address directly in `HA_HOST`.
 
 > [!IMPORTANT]  
 > Check [`configuration.base.yml`](/redphx/homedeck/blob/main/src/homedeck/yaml/configuration.base.yml) for the base configuration. You can override any of them if you want in your own configuration file.  
@@ -50,8 +88,60 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Property          | Description | Default   | Type |
 |:------------------|:------------|:----------|:-----|
 | `dim_brightness`  | Brightness when dimming | 10 | `int` (0-100) |
-| `dim_timeout`     | Start dimming after X second(s) | 30 | `int` (>= 1) |
-| `sleep_timeout`   | Start dimming after X second(s) | 300 | `int` (>= 1) |
+| `dim_timeout`     | Start dimming after X second(s). `0` disables dimming. | 30 | `int` (>= 0) |
+| `sleep_timeout`   | Turn the display off after X second(s). **`0` keeps the display always on.** | 300 | `int` (>= 0) |
+| `schedule`        | Time-of-day brightness windows | `[]` | `List[Schedule]` |
+
+#### `Schedule`
+
+Caps the brightness during a window of the day — for example, dimming a wall-mounted
+deck overnight without ever turning it off.
+
+| Property      | Description | Default   | Type |
+|:--------------|:------------|:----------|:-----|
+| `from`        | Start of the window, inclusive. 24h `"HH:MM"`. | | `str` |
+| `to`          | End of the window, exclusive. 24h `"HH:MM"`. | | `str` |
+| `brightness`  | Brightness while idle inside the window. Falls back to `dim_brightness`. | `dim_brightness` | `int` (0-100) |
+
+Notes:
+- Windows may **wrap past midnight** (`22:00` → `06:00` is the night, not the day).
+- The **first matching** entry wins if windows overlap.
+- **Quote the times.** YAML 1.1 reads an unquoted `22:00` as the integer `1320`
+  (sexagesimal), so write `'22:00'`. The schema rejects the unquoted form rather
+  than dimming at the wrong hour, but it's easy to trip over.
+- Times are **local to the machine**, using the `TIMEZONE` variable from `.env`.
+  Make sure the system clock is correct (NTP is enabled by default on DietPi).
+- Pressing a button inside a window returns the display to the normal
+  `brightness` so it's readable, then it settles back after `dim_timeout`.
+- When a `schedule` is set, the deck **does not dim outside** those windows —
+  otherwise `dim_timeout` would dim a wall-mounted deck in the middle of the day.
+
+##### Always-on wall-mounted deck
+
+Full brightness during the day, dimmed from 22:00 to 06:00, never blanks:
+
+```yaml
+brightness: 80
+
+sleep:
+  sleep_timeout: 0    # never turn the display off
+  dim_timeout: 30     # settle to the night level after 30s idle
+  dim_brightness: 10
+
+  schedule:
+    - from: '22:00'
+      to: '06:00'
+      brightness: 10
+```
+
+A ready-to-edit version is in [`assets/configuration.wall-mount.yml.example`](assets/configuration.wall-mount.yml.example).
+
+Resulting behaviour:
+
+| Time | Idle | Just pressed |
+|:-----|:-----|:-------------|
+| 06:00 – 22:00 | 80 | 80 |
+| 22:00 – 06:00 | 10 | 80 |
 
 #### `LabelStyle`
 
@@ -303,6 +393,79 @@ buttons:
   - name: {{ states("light.living_room_light") }}
 ```
 
+
+### Editing the configuration from Home Assistant
+
+Instead of editing `assets/configuration.yml` over SSH, you can edit it from a
+panel inside Home Assistant using the official
+[HomeDeck Manager add-on](https://github.com/redphx/homedeck-home-assistant-addon).
+
+It is an Ingress add-on that finds decks on the LAN over mDNS and talks to
+`server.py` over HTTP — the deck does **not** need to be plugged into the Home
+Assistant machine. It gives you a Monaco YAML editor with live validation
+driven by this repo's schema (so `sleep.schedule` autocompletes and is checked
+as you type), plus start/stop buttons and a live log panel.
+
+To use it, run the API server on the SBC. Install it with the included
+[`homedeck-server.service`](homedeck-server.service):
+
+```bash
+sudo cp homedeck-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now homedeck-server
+```
+
+> [!IMPORTANT]
+> `server.py` **starts and manages `deck.py` itself** on boot, and the add-on's
+> Start/Stop buttons control that child process. So use **either**
+> `homedeck.service` **or** `homedeck-server.service`, not both:
+>
+> - Just a wall panel, configured over SSH → `homedeck.service`.
+> - Editing from Home Assistant → `homedeck-server.service` (it runs the deck for you).
+>
+> Running both is not harmful — `start_script()` checks for an existing
+> `deck.py` process first — but the Stop button won't be able to stop a deck
+> that systemd owns, and systemd will immediately restart it.
+
+Then in Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**,
+add `https://github.com/redphx/homedeck-home-assistant-addon`, then install
+"HomeDeck Manager".
+
+> [!NOTE]
+> The add-on is a **YAML editor**, not a drag-and-drop button designer — you get
+> schema validation and autocomplete, not a visual grid.
+
+> [!IMPORTANT]
+> Discovery needs `HEAD /v1/status` to return 200. Upstream registers that route
+> under a literal `/v{API_VERSION}/status` path, so discovery silently finds
+> nothing; this fork fixes it. The add-on also addresses devices by **IPv4 only**,
+> so give the SBC a static lease.
+
+### Running as a service
+
+To start on boot and recover automatically after a power loss, USB replug, or a
+Home Assistant restart, install the included [`homedeck.service`](homedeck.service).
+
+It assumes the project is at `/opt/homedeck` with a virtualenv at
+`/opt/homedeck/.venv` — edit `WorkingDirectory` and `ExecStart` if yours differs.
+
+```bash
+sudo cp homedeck.service /etc/systemd/system/homedeck.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now homedeck
+systemctl status homedeck
+```
+
+Watch the logs:
+
+```bash
+journalctl -u homedeck -f
+```
+
+> [!NOTE]
+> The service intentionally has no `EnvironmentFile=`. `deck.py` loads `.env`
+> itself via python-dotenv, which strips the quotes around values like
+> `HA_HOST="ws://..."`; systemd would keep them and the connection would fail.
 
 ### TODO
 - Docker container
