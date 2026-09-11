@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -103,18 +104,46 @@ async def read_script_output():
 
         line = await process.stdout.readline()
         if not line:
+            # EOF: the child exited. Report it and let it be restarted, rather
+            # than spinning on a dead pipe forever.
+            if process.returncode is not None:
+                await _handle_script_exit()
+
             await asyncio.sleep(0.1)
             continue
+
+        message = line.decode(errors='replace').strip()
+
+        # Also echo to our own stdout so deck.py's output reaches the journal.
+        # Otherwise it is only visible to a connected WebSocket client, and a
+        # deck that fails at startup does so invisibly.
+        print(f'[{SCRIPT_NAME}] {message}', flush=True)
 
         await app.state.broadcast_queue.put({
             'type': 'logs',
             'payload': {
                 'timestamp': int(time.time()),
-                'message': line.decode().strip(),
+                'message': message,
             },
         })
 
         await asyncio.sleep(0.05)
+
+
+async def _handle_script_exit():
+    ''' Log that deck.py died and clear it so it can be started again. '''
+    global process
+
+    returncode = process.returncode
+    print(f'⚠️ {SCRIPT_NAME} exited with code {returncode}', flush=True)
+
+    process = None
+    await broadcast_script_status()
+
+    # Give a crash-looping deck room to breathe before the next attempt
+    await asyncio.sleep(5)
+    print(f'Restarting {SCRIPT_NAME}...', flush=True)
+    await start_script()
 
 
 async def broadcast_messages():
@@ -177,11 +206,20 @@ async def start_script():
     if process is not None or is_script_running():
         return {'error': 'Script is already running'}
 
+    # Use the interpreter running this server, not whatever "python3" resolves
+    # to on PATH. Under systemd that is the bare system Python, which has none
+    # of the dependencies installed, so deck.py died instantly on import - and
+    # silently, because its output only goes to a pipe nobody reads until a
+    # WebSocket client connects.
+    script_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), SCRIPT_NAME)
     process = await asyncio.create_subprocess_exec(
-        'python3', '-u', SCRIPT_NAME,
+        sys.executable, '-u', script_path,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=os.path.dirname(script_path),
     )
+
+    print(f'Started {SCRIPT_NAME} (pid {process.pid}) with {sys.executable}', flush=True)
 
     await broadcast_script_status()
     return {'message': 'Script started'}
