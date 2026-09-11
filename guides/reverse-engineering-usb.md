@@ -299,6 +299,46 @@ means the default screen is replaced by ordinary button data, and the reason
 HomeDeck does not clear it is something about *how* it writes them rather than
 a missing command.
 
+## What the first-connection capture showed
+
+A capture of the official app connecting to a D200 (firmware 5.3.6, hardware
+SSD210V100) produced this handshake, all host -> device:
+
+```
+0x000b  SET_LABEL_STYLE   {"Align":"bottom","Color":16777215,...}
+0x0303  IN_DEVICE_INFO    {"SerialNumber":...,"Dversion":"5.3.6","DeviceType":"D200"}
+0x000a  SET_BRIGHTNESS    86
+0x001a  *** UNKNOWN ***   "0"
+0x0001  SET_BUTTONS       284473-byte ZIP
+0x0006  SET_SMALL_WINDOW  2|12|41|15:56:09|1|12H|
+```
+
+Two findings.
+
+**`0x001a` is a new command**, payload a single ASCII `"0"`, sent right after
+brightness on every connection. A one-byte 0/1 value looks like a toggle. It is
+the best current candidate for the screensaver or background switch, but this
+has not been confirmed - sending it is untested.
+
+**The deck has 14 slots, not 13.** The app's `manifest.json` is keyed
+`"{col}_{row}"` and contains:
+
+```
+0_0 0_1 0_2   1_0 1_1 1_2   2_0 2_1 2_2   3_0 3_1 3_2   4_0 4_1
+```
+
+That is 14 entries. HomeDeck's index-to-key mapping produces only 13 and never
+emits `3_2`, so whatever the firmware last drew there stays on screen. In the
+app's own manifest `3_2` is the single entry with an empty icon - it blanks
+that slot explicitly.
+
+Use [`tools/extract_zip.py`](../tools/extract_zip.py) to pull the ZIP out of a
+capture and read its manifest:
+
+```bash
+python3 tools/extract_zip.py firstcapture.pcapng default.zip
+```
+
 ## If the capture comes up empty
 
 Some settings are written **once to firmware** and not re-sent on every launch.
