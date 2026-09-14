@@ -438,6 +438,9 @@ class IconProvider:
     def __init__(self):
         self._queue = asyncio.Queue()
         self._requested = set()
+        # URLs that returned a non-200. Retrying them on every redraw would
+        # force a full-page repaint each time, in a loop.
+        self._failed = set()
 
     async def _create_download_task(self, icon: dict):
         self._requested.add(icon.download_url)
@@ -445,7 +448,7 @@ class IconProvider:
         await self._worker()
 
     def _request_icon(self, icon: dict):
-        if icon.download_url in self._requested:
+        if icon.download_url in self._requested or icon.download_url in self._failed:
             return
 
         # Start downloading
@@ -504,9 +507,18 @@ class IconProvider:
 
                         # Reload deck
                         await event_bus.publish(EventName.DECK_FORCE_RELOAD)
+                    else:
+                        # Nothing was written, so the icon stays unavailable and
+                        # every redraw asks for it again - each retry forcing a
+                        # full-page redraw, which is a ~50KB transfer to the
+                        # deck. Remember the failure and stop asking.
+                        logging.warning(f'Icon unavailable ({response.status_code}): {url}')
+                        self._failed.add(url)
         finally:
-            if icon.id in self._requested:
-                self._requested.remove(icon.id)
+            # Keyed by download_url, which is what _request_icon checks.
+            # This used to discard icon.id - a different value - so the entry
+            # was never removed and the set grew without ever deduplicating.
+            self._requested.discard(icon.download_url)
             self._queue.task_done()
 
 
