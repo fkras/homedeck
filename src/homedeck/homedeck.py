@@ -659,11 +659,11 @@ class HomeDeck:
                 await asyncio.sleep(self.STATE_CHANGE_DEBOUNCE)
                 self._ha_reload_timer = None
 
-                # While dimmed the firmware drops the button images, so a
-                # partial update - which sends only the buttons whose config
-                # changed - would repaint one button onto an otherwise black
-                # screen. Redraw everything instead.
-                self.reload_current_page(force=self._sleep_status == SleepStatus.DIM)
+                # A partial update is enough: the images on the deck are
+                # whatever we last sent. Forcing a full page here would repaint
+                # ~36KB on every state_changed event Home Assistant emits,
+                # which for a deck sitting dimmed is a redraw a minute.
+                self.reload_current_page()
             except asyncio.CancelledError:
                 # Superseded by a newer event; the newer timer will redraw
                 pass

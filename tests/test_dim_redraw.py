@@ -10,6 +10,9 @@ changed. On a black screen it repaints one button and leaves the rest blank -
 which is why pressing a button restored only that button, while entering a
 sub-page and coming back (the one path that sends a full page) fixed
 everything.
+
+The repaint belongs on the wake transition only. Doing it on every Home
+Assistant state change instead caused a full ~36KB redraw about once a minute.
 """
 
 from homedeck.enums import SleepStatus
@@ -45,21 +48,20 @@ class TestForceReload:
         assert deck.reload_calls == [('$root', False)]
 
 
-class TestStateChangeWhileDimmed:
-    """A state change arriving while dimmed must redraw everything."""
+class TestStateChangeStaysPartial:
+    """A Home Assistant state change must not force a full page.
 
-    def _force_flag_for(self, status):
+    Forcing one here was tried and reverted: Home Assistant emits
+    state_changed constantly (a sensor updating every minute is enough), and a
+    deck sitting dimmed would repaint ~36KB each time. The images on the deck
+    are whatever we last sent, so a partial update is correct. Recovering from
+    the firmware blanking them is handled on wake instead.
+    """
+
+    def test_reload_is_not_forced(self):
         deck = RecordingDeck()
-        deck._sleep_status = status
+        deck._sleep_status = SleepStatus.DIM
 
-        # What _ha_on_state_changed's debounced reload does
-        deck.reload_current_page(force=deck._sleep_status == SleepStatus.DIM)
+        deck.reload_current_page()
 
-        return deck.reload_calls[0][1]
-
-    def test_dimmed_forces_a_full_redraw(self):
-        assert self._force_flag_for(SleepStatus.DIM) is True
-
-    def test_awake_uses_a_partial_update(self):
-        # Awake the images are intact, so only changed buttons need sending
-        assert self._force_flag_for(SleepStatus.WAKE) is False
+        assert deck.reload_calls == [('$root', False)]
