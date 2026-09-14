@@ -70,13 +70,16 @@ class HomeAssistantWebSocket:
         logging.info('Authenticated successfully.')
 
     async def send_message(self, message: dict, callback=None):
-        logging.info('send_message: ' + str(message))
         async with self._lock:
             message['id'] = self._message_id
             if callback:
                 self._callbacks[message['id']] = callback
 
             self._message_id += 1
+            # Logged after the id is assigned, so a failure reported by
+            # listen() ("Message 7 failed") can be traced back to the command
+            # that caused it.
+            logging.info('send_message: ' + str(message))
             await self._ws.send(json.dumps(message))
 
             return message['id']
@@ -132,6 +135,15 @@ class HomeAssistantWebSocket:
         async for message in self._ws:
             data = json.loads(message)
             # logging.info(f'Received: {message}')
+
+            # A refused command comes back as a result with success: false and
+            # no 'result' key. Most callers - call_service among them - send
+            # without a callback, so such a result matched neither branch below
+            # and was dropped in silence: a service call Home Assistant refused
+            # (unknown entity, service's domain not matching the entity's,
+            # token without permission) looked exactly like one that worked.
+            if data.get('type') == 'result' and not data.get('success', True):
+                logging.error('Message %s failed: %s', data.get('id'), data.get('error'))
 
             if 'id' in data and data['id'] in self._callbacks:
                 if 'result' not in data:

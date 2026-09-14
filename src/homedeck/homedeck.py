@@ -140,7 +140,10 @@ class HomeDeck:
         try:
             await self._ha.call_service(domain=domain, service=service, service_data=service_data)
         except Exception:
-            pass
+            # A bare pass here hid the two failures that stop a press from ever
+            # reaching Home Assistant: a websocket closed under us, and a
+            # malformed action that raises before anything is sent.
+            traceback.print_exc()
 
     def reload_current_page(self, *, force=False) -> bool:
         return self.reload_page(self._current_page_id, force=force)
