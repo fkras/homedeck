@@ -229,6 +229,12 @@ class HomeDeck:
                 if sleep_config and self._sleep_status != SleepStatus.WAKE:
                     if self._sleep_status == SleepStatus.DIM:
                         self._wake_up()
+                        # The firmware drops the button images while idle - the
+                        # screen stays lit and the clock keeps ticking, but the
+                        # buttons go black. HomeDeck can't see that, so a later
+                        # partial update (which only sends buttons whose config
+                        # changed) leaves them blank. Repaint the whole page.
+                        self.force_reload_current_page()
                     elif self._sleep_status == SleepStatus.SLEEP:
                         # Only wake the device up on releasing button
                         if not is_holding and not command.pressed:
@@ -652,7 +658,12 @@ class HomeDeck:
             try:
                 await asyncio.sleep(self.STATE_CHANGE_DEBOUNCE)
                 self._ha_reload_timer = None
-                self.reload_current_page()
+
+                # While dimmed the firmware drops the button images, so a
+                # partial update - which sends only the buttons whose config
+                # changed - would repaint one button onto an otherwise black
+                # screen. Redraw everything instead.
+                self.reload_current_page(force=self._sleep_status == SleepStatus.DIM)
             except asyncio.CancelledError:
                 # Superseded by a newer event; the newer timer will redraw
                 pass

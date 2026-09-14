@@ -340,7 +340,10 @@ $defs:
           - $ref: '#/$defs/ButtonAction'
           - type: 'null'
       visibility:
-        oneOf:
+        # anyOf, not oneOf: 'hidden' and 'gone' match both the Visibility enum
+        # and the plain-string branch, and oneOf requires exactly one match, so
+        # the documented keywords were rejected as invalid.
+        anyOf:
           - $ref: '#/$defs/Visibility'
           - type: string
 
@@ -427,7 +430,8 @@ $defs:
           - type: 'null'
         description: Defines what happens when the button is long-pressed
       visibility:
-        oneOf:
+        # anyOf, not oneOf - see the note on the other visibility property
+        anyOf:
           - $ref: '#/$defs/Visibility'
           - type: string
         description: Controls whether the button is shown, hidden, or gone
