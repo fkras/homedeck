@@ -1,11 +1,22 @@
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
 
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 logging.basicConfig(level=logging.INFO)
+
+
+class HomeAssistantUnavailable(ConnectionError):
+    ''' Home Assistant can't be reached or dropped the connection - an outage
+    to wait out, such as a restart, rather than a bug to report. '''
+
+
+# What a restarting or unreachable Home Assistant raises: refused or timed-out
+# connects (OSError, and asyncio.TimeoutError, which isn't one before 3.11),
+# HTTP errors from a server still starting, and a socket closing mid-handshake.
+_UNAVAILABLE_ERRORS = (OSError, asyncio.TimeoutError, InvalidHandshake, ConnectionClosed)
 
 
 class HomeAssistantWebSocket:
@@ -23,17 +34,21 @@ class HomeAssistantWebSocket:
         self._callbacks = {}
         self._error_callbacks = {}
 
-    @asynccontextmanager
-    async def connect(self) -> websockets.WebSocketClientProtocol:
+    async def connect(self):
+        ''' Connect, authenticate and load every entity's state. '''
         ws_url = f'{self._host}/api/websocket'
 
-        async with websockets.connect(ws_url, ping_timeout=5) as ws:
-            self._ws = ws
+        try:
+            self._ws = await websockets.connect(ws_url, ping_timeout=5)
             await self._authenticate()
-            yield ws
+            await self.get_all_states()
+        except _UNAVAILABLE_ERRORS as e:
+            await self.disconnect()
+            raise HomeAssistantUnavailable(str(e) or type(e).__name__) from e
 
     async def disconnect(self):
-        await self._ws.close()
+        if self._ws:
+            await self._ws.close()
 
     async def get_entity_state(self, entity_id: str):
         if entity_id in self._states:
@@ -132,6 +147,20 @@ class HomeAssistantWebSocket:
         })
 
     async def listen(self):
+        try:
+            await self._receive_forever()
+        except ConnectionClosed as e:
+            # Network failure or a non-1000 close
+            raise HomeAssistantUnavailable(str(e)) from e
+
+        # The loop ends quietly, without raising, when the server closes the
+        # connection cleanly (code 1000) - which Home Assistant does on every
+        # restart or update. Returning here left the deck drawn and lit but
+        # deaf: no state updates, and every press failing on a closed socket.
+        # Raise so the caller reconnects.
+        raise HomeAssistantUnavailable('Home Assistant closed the connection')
+
+    async def _receive_forever(self):
         async for message in self._ws:
             data = json.loads(message)
             # logging.info(f'Received: {message}')
@@ -162,13 +191,6 @@ class HomeAssistantWebSocket:
 
                 for callback in self._event_listeners[event_type]:
                     await callback(event_data)
-
-        # The loop above ends quietly, without raising, when the server closes
-        # the connection cleanly (code 1000) - which Home Assistant does on
-        # every restart or update. Returning here left the deck drawn and lit
-        # but deaf: no state updates, and every press failing on a closed
-        # socket. Raise so the caller tears the session down and reconnects.
-        raise ConnectionError('Home Assistant closed the connection')
 
     def on_event(self, event_type: str, callback):
         if event_type not in self._event_listeners:

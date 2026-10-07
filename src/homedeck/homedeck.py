@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 import os
 import sys
 import time
@@ -15,12 +16,14 @@ from strmdck.device import ButtonAction
 from strmdck.device_manager import auto_connect
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from websockets.exceptions import ConnectionClosed
 
 from .configuration import Configuration
+from .connecting import spinner_frames
 from .elements import InteractionType, PageElement
 from .enums import SleepStatus
 from .event_bus import EventName, event_bus
-from .home_assistant import HomeAssistantWebSocket
+from .home_assistant import HomeAssistantUnavailable, HomeAssistantWebSocket
 from .utils import deep_merge, local_now
 
 load_dotenv()
@@ -32,22 +35,26 @@ class DeviceUnresponsiveError(RuntimeError):
     ''' Raised when the deck stops accepting writes and must be reconnected. '''
 
 
-async def run_until_first_exit(*coros):
-    ''' Run coroutines together until any one of them returns or raises, then
-    cancel the rest and re-raise its error.
+async def run_alongside(main, *background):
+    ''' Run `main` with `background` coroutines alongside it, and return its
+    result.
 
-    asyncio.gather does neither: it keeps waiting while the others run, so a
+    The background coroutines are meant to last as long as `main` does: if one
+    raises, or returns, first, `main` is cancelled and that error raised.
+    Whatever is still running at the end is cancelled.
+
+    asyncio.gather does neither: it kept waiting while the others ran, so a
     task that returned took no session down with it, and when one raised the
     others kept running and piled up on every reconnect. '''
-    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    tasks = [asyncio.ensure_future(coro) for coro in (main, *background)]
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
-            task.result()
+            if task is not tasks[0]:
+                task.result()
+                raise RuntimeError(f'{task.get_coro().__qualname__} ended unexpectedly')
 
-        # Every task here is meant to run for the whole session
-        names = ', '.join(task.get_coro().__qualname__ for task in done)
-        raise RuntimeError(f'{names} ended unexpectedly')
+        return tasks[0].result()
     finally:
         for task in tasks:
             task.cancel()
@@ -95,6 +102,14 @@ class HomeDeck:
 
     # Reconnect after the device has ignored writes for this many seconds
     DEVICE_TIMEOUT = 10
+
+    # Wait between attempts to open the deck or reach Home Assistant
+    RECONNECT_DELAY = 3
+    # While Home Assistant is away: the button the spinner is drawn on (the
+    # middle of the grid), its label, and how long each frame stays up
+    CONNECTING_BUTTON = 7
+    CONNECTING_LABEL = 'Connecting'
+    CONNECTING_FRAME_INTERVAL = 0.25
 
     # Clock format the small window renders: "12H" or "24H"
     CLOCK_FORMAT = '24H'
@@ -177,7 +192,9 @@ class HomeDeck:
         return self.reload_page(self._current_page_id, force=True)
 
     def reload_page(self, page_id: str, *, force=False) -> bool:
-        if not self._ha:
+        # Not while the connecting spinner is up: a late redraw (a debounced
+        # state change, an icon finishing its download) would paint over it
+        if not self._is_ready:
             return False
 
         is_sub_page = self._current_page_id != '$root'
@@ -292,9 +309,6 @@ class HomeDeck:
 
     async def _keep_alive(self):
         while True:
-            if not self._is_ready:
-                break
-
             await asyncio.sleep(1)
 
             # Keep alive. The device can stop accepting writes without the USB
@@ -609,58 +623,23 @@ class HomeDeck:
         event_bus.subscribe(EventName.DECK_RELOAD, self.reload_current_page)
         event_bus.subscribe(EventName.DECK_FORCE_RELOAD, self.force_reload_current_page)
 
-        reconnect_delay = 3
         while True:
             self._reset()
 
             try:
-                # Setup device
-                device = None
-                while True:
-                    try:
-                        device = auto_connect()
-                        if device:
-                            self._device = device
-                            print('Device connected')
-                            break
-
-                        print('Could not find any device')
-                        await asyncio.sleep(reconnect_delay)
-                    except Exception as e:
-                        try:
-                            device.close()
-                        except Exception:
-                            pass
-
-                        print('Could not open the device:', e)
-                        await asyncio.sleep(reconnect_delay)
-
-                # Setup Home Assistant
-                async with self._ha.connect():
-                    await self._ha.get_all_states()
-                    self._ha.on_event('state_changed', self._ha_on_state_changed)
-                    await self._ha.subscribe_events('state_changed')
-
-                    self._is_ready = True
-                    self._has_started = True
-                    await run_until_first_exit(
-                        self._ha.listen(),
-                        self._read_packets(),
-                        self._keep_alive(),
-                        self._setup_hot_reload(),
-                    )
+                await self._connect_device()
+                await self._run_home_assistant()
             except Exception:
                 traceback.print_exc()
 
                 # Crash app if error on startup. Only the first one: _reset()
-                # clears _is_ready on every reconnect, so checking it here made
-                # a reconnect attempted while Home Assistant was still
-                # restarting exit the whole process.
+                # clears _is_ready on every reconnect, so checking that here
+                # made any failed reconnect exit the whole process.
                 if not self._has_started:
                     sys.exit(1)
-
-                self._is_ready = False
             finally:
+                self._is_ready = False
+
                 try:
                     self._device.close()
                 except Exception:
@@ -671,7 +650,115 @@ class HomeDeck:
                 except Exception:
                     pass
 
-                await asyncio.sleep(reconnect_delay)
+                await asyncio.sleep(self.RECONNECT_DELAY)
+
+    async def _connect_device(self):
+        device = None
+        while True:
+            try:
+                device = auto_connect()
+                if device:
+                    self._device = device
+                    print('Device connected')
+                    return
+
+                print('Could not find any device')
+            except Exception as e:
+                try:
+                    device.close()
+                except Exception:
+                    pass
+
+                print('Could not open the device:', e)
+
+            await asyncio.sleep(self.RECONNECT_DELAY)
+
+    async def _run_home_assistant(self):
+        ''' Keep a Home Assistant session running on the open deck.
+
+        Home Assistant going away - a restart, an update, the network - is
+        waited out here, with the deck left open and a spinner on it. This only
+        returns by raising, for trouble that needs the deck itself reopened.
+        '''
+        while True:
+            await run_alongside(
+                self._connect_home_assistant(),
+                self._show_connecting(),
+                self._discard_presses(),
+                self._keep_alive(),
+            )
+
+            try:
+                self._ha.on_event('state_changed', self._ha_on_state_changed)
+                await self._ha.subscribe_events('state_changed')
+
+                self._is_ready = True
+                self._has_started = True
+                # Reload against the fresh states. That repaints the whole
+                # page over the spinner, and drops any page left over from
+                # before the outage.
+                self._need_reload_all = True
+
+                await run_alongside(
+                    self._ha.listen(),
+                    self._read_packets(),
+                    self._keep_alive(),
+                    self._setup_hot_reload(),
+                )
+            except (HomeAssistantUnavailable, ConnectionClosed) as e:
+                print('⚠️ Lost Home Assistant:', e)
+            finally:
+                self._is_ready = False
+                try:
+                    await self._ha.disconnect()
+                except Exception:
+                    pass
+
+    async def _connect_home_assistant(self):
+        ''' Connect to Home Assistant, retrying until it answers. '''
+        while True:
+            self._ha = HomeAssistantWebSocket(HA_HOST, HA_ACCESS_TOKEN)
+            try:
+                await self._ha.connect()
+                return
+            except HomeAssistantUnavailable as e:
+                # Expected while it restarts, so one line rather than a
+                # traceback every few seconds
+                print(f'⚠️ Home Assistant unavailable ({e}) - retrying in {self.RECONNECT_DELAY}s')
+
+            await asyncio.sleep(self.RECONNECT_DELAY)
+
+    async def _show_connecting(self):
+        ''' Animate a spinner on the deck until cancelled. '''
+        frames = spinner_frames(self._device.ICON_WIDTH)
+        slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS
+        # The page that was up is being replaced, and the session that follows
+        # starts again from the root page
+        self._current_page_element = None
+        self._pages_stack = []
+
+        for frame in itertools.count():
+            button = {'icon': frames[frame % len(frames)], 'name': self.CONNECTING_LABEL}
+            if frame == 0:
+                # Blank every other slot, as a full page does
+                buttons = dict.fromkeys(range(slot_count))
+                buttons[self.CONNECTING_BUTTON] = button
+                self._device.set_buttons(buttons)
+            else:
+                self._device.set_buttons({self.CONNECTING_BUTTON: button}, update_only=True)
+
+            await asyncio.sleep(self.CONNECTING_FRAME_INTERVAL)
+
+    async def _discard_presses(self):
+        ''' Read and drop button presses while Home Assistant is away.
+
+        Unread presses wait in the HID buffer, so without this every press made
+        during an outage would fire its action once the connection came back.
+        A press still wakes a dimmed deck, so the spinner can be seen.
+        '''
+        async for command in self._device.read_packet():
+            if isinstance(command, ButtonAction) and command.pressed and self._configuration:
+                self._wake_up()
 
     async def _ha_on_state_changed(self, _):
         # Don't redraw a screen nobody can see
