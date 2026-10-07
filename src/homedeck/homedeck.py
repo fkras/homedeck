@@ -32,6 +32,28 @@ class DeviceUnresponsiveError(RuntimeError):
     ''' Raised when the deck stops accepting writes and must be reconnected. '''
 
 
+async def run_until_first_exit(*coros):
+    ''' Run coroutines together until any one of them returns or raises, then
+    cancel the rest and re-raise its error.
+
+    asyncio.gather does neither: it keeps waiting while the others run, so a
+    task that returned took no session down with it, and when one raised the
+    others kept running and piled up on every reconnect. '''
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+
+        # Every task here is meant to run for the whole session
+        names = ', '.join(task.get_coro().__qualname__ for task in done)
+        raise RuntimeError(f'{names} ended unexpectedly')
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class HomeDeck:
     class ConfigurationFileChangeHandler(FileSystemEventHandler):
         def __init__(self, deck: HomeDeck):
@@ -92,6 +114,9 @@ class HomeDeck:
         self._product_id = product_id
 
         self._configuration_observer = None
+        # Set once the first session is up. Unlike _is_ready, _reset() never
+        # clears it, so a failed reconnect retries instead of exiting.
+        self._has_started = False
         script_dir = os.path.dirname(os.path.realpath(__file__))
         with open(os.path.join(script_dir, 'yaml', 'configuration.base.yml'), 'r') as fp:
             self._base_configuration_dict = yaml.safe_load(fp.read())
@@ -617,7 +642,8 @@ class HomeDeck:
                     await self._ha.subscribe_events('state_changed')
 
                     self._is_ready = True
-                    await asyncio.gather(
+                    self._has_started = True
+                    await run_until_first_exit(
                         self._ha.listen(),
                         self._read_packets(),
                         self._keep_alive(),
@@ -626,8 +652,11 @@ class HomeDeck:
             except Exception:
                 traceback.print_exc()
 
-                # Crash app if error on startup
-                if not self._is_ready:
+                # Crash app if error on startup. Only the first one: _reset()
+                # clears _is_ready on every reconnect, so checking it here made
+                # a reconnect attempted while Home Assistant was still
+                # restarting exit the whole process.
+                if not self._has_started:
                     sys.exit(1)
 
                 self._is_ready = False

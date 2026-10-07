@@ -163,6 +163,13 @@ class HomeAssistantWebSocket:
                 for callback in self._event_listeners[event_type]:
                     await callback(event_data)
 
+        # The loop above ends quietly, without raising, when the server closes
+        # the connection cleanly (code 1000) - which Home Assistant does on
+        # every restart or update. Returning here left the deck drawn and lit
+        # but deaf: no state updates, and every press failing on a closed
+        # socket. Raise so the caller tears the session down and reconnects.
+        raise ConnectionError('Home Assistant closed the connection')
+
     def on_event(self, event_type: str, callback):
         if event_type not in self._event_listeners:
             self._event_listeners[event_type] = []
