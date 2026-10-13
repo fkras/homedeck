@@ -33,6 +33,8 @@ class HomeAssistantWebSocket:
 
         self._callbacks = {}
         self._error_callbacks = {}
+        # Called with (message id, error) when Home Assistant refuses a command
+        self.on_command_failed = None
 
     async def connect(self):
         ''' Connect, authenticate and load every entity's state. '''
@@ -173,6 +175,11 @@ class HomeAssistantWebSocket:
             # token without permission) looked exactly like one that worked.
             if data.get('type') == 'result' and not data.get('success', True):
                 logging.error('Message %s failed: %s', data.get('id'), data.get('error'))
+                if self.on_command_failed:
+                    try:
+                        self.on_command_failed(data.get('id'), data.get('error'))
+                    except Exception as e:
+                        print('on_command_failed', e)
 
             if 'id' in data and data['id'] in self._callbacks:
                 if 'result' not in data:

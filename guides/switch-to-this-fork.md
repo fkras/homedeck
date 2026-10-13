@@ -93,6 +93,16 @@ cd $HD
 $HD_PY -m pip install -e .
 ```
 
+This fork talks to the deck through its own layer (`src/homedeck/d200/`)
+instead of strmdck. `hidapi`, which strmdck pulled in, is now a direct
+dependency, so the reinstall above is all it needs. strmdck itself can go, and
+so can the `.build/` folder it zipped pages in:
+
+```bash
+$HD_PY -m pip uninstall -y strmdck construct
+rm -rf $HD/.build
+```
+
 ## 4. Clear the icon cache once
 
 Generated icons are now named by a stable hash instead of Python's per-process

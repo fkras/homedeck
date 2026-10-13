@@ -31,8 +31,17 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
 | Added the `cbi:` icon source | Brand logos for devices and services (Spotify, Sonos, IKEA, Tesla, …), which neither MDI nor Phosphor covers |
-| Writes the deck's 14th manifest slot | The official app sends 14 slots keyed `{col}_{row}`, ending with `3_2`; strmdck stops at 13, so that slot kept whatever the firmware drew there — the Ulanzi logo and URL behind the small window |
-| Watchdog reconnects an unresponsive deck | strmdck swallows every write error, so if the deck stops accepting writes (notably when the D200's own firmware screensaver takes over) HomeDeck kept sending keep-alives into a void forever |
+| Writes the deck's 14th manifest slot | The official app sends 14 slots keyed `{col}_{row}`, ending with `3_2`; strmdck stopped at 13, so that slot kept whatever the firmware drew there — the Ulanzi logo and URL behind the small window |
+| Watchdog reconnects an unresponsive deck | strmdck swallowed every write error, so if the deck stopped accepting writes (notably when the D200's own firmware screensaver took over) HomeDeck kept sending keep-alives into a void forever |
+| [Own D200 communications layer](guides/d200-protocol.md) replaces strmdck | Built from how Ulanzi Studio drives the deck (its HID writer, reader and logs). Writes run on their own thread, so a page upload no longer blocks the event loop; failed writes and reads are reported instead of swallowed |
+| Every report carries report ID 0 | strmdck omitted it, so hidapi ate the first byte of any ZIP chunk that began with `0x00`; it papered over that by re-zipping with random padding until no chunk did |
+| Sends the sleep-time setting ([`deck_sleep_timeout`](#configuration)) on connect | Ulanzi Studio sends it on every connect (`0x1a`, default `0`); strmdck never did |
+| Connect handshake reads the device info | Serial, firmware and hardware version are logged; brightness and the sleep-time setting are restored, and the page repainted, if the firmware restarts |
+| Small window: every mode, with its date field | Four more clock styles were found (`SmallWindowMode.CLOCK_2`–`CLOCK_5`); three of them need the seventh field, which was always sent empty |
+| Failed actions flash "!" on their key ([`alert_on_error`](#configuration)) | Home Assistant refusing a call (unknown entity, wrong domain, no permission) used to look exactly like success on the deck. Uses the firmware's own alert overlay (protocol `0xe0`, from a capture of Ulanzi Studio) |
+| [`screensaver`](#configuration) image and lock/unlock | Upload the deck's screensaver (`0x09`), show it (`0x04`) and dismiss it (`0x05`, which Ulanzi Studio never sends). Connecting now unlocks a deck stuck on its screensaver |
+| Opens the deck's vendor HID interface explicitly | The deck also exposes a keyboard interface; taking the first match, as strmdck did, can open that one instead (it does on Windows) |
+| `DECK_VENDOR_ID` / `DECK_PRODUCT_ID` | strmdck ignored the IDs HomeDeck passed, so a firmware update that changed them meant editing the venv |
 | Fixed `/v1/status` never registering (missing `f` prefix) | The HA add-on discovers decks via `HEAD /v1/status`; the literal path `/v{API_VERSION}/status` was registered instead, making the device invisible to it |
 | Fixed `if os.path.exists:` in `get_configuration()` | Missing parentheses meant the guard was always true, so a missing `configuration.yml` returned a 500 instead of empty content |
 
@@ -68,6 +77,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | `ENABLE_CACHE` | Cache generated icons. `0` disables. | `1` |
 | `CACHE_MAX_AGE_DAYS` | Prune generated icons unused for this many days. `0` keeps forever. | `30` |
 | `ENABLE_OPTIPNG` | Run `optipng` on generated icons. Slow on SBCs. | `0` |
+| `DECK_VENDOR_ID` / `DECK_PRODUCT_ID` | Deck USB IDs in hex, if a firmware update changes them (`tools/diagnose_device.py` prints them) | `2207` / `0019` |
 
 > [!TIP]
 > If `homeassistant.local` doesn't resolve on your SBC, use the IP address directly in `HA_HOST`.
@@ -81,6 +91,9 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 |:------------------|:------------|:----------|:-----|
 | `brightness`      | The default brightness level of the buttons | 80 | `int` (1-100) |
 | `sleep`           | Sleep mode configuration when inactive | | `Sleep` |
+| `deck_sleep_timeout` | The deck's sleep-time setting in minutes, as Ulanzi Studio sends it (`0x1a`); its effect wasn't observed | 0 | `int` (≥ 0) |
+| `alert_on_error`  | Flash the deck's built-in "!" on a key whose Home Assistant action failed | true | `bool` |
+| `screensaver`     | Image (in `assets/`) for the deck's own screensaver; uploaded when it changes | | `str` |
 | `label_style`     | Label's style | | `LabelStyle` |
 | `system_buttons`  | Setup the position of system buttons (back, previous, next) | | `Dict[String, SystemButton]` |
 | `presets`         | Preset definitions | | `Dict[String, Preset]` |
@@ -451,38 +464,29 @@ Rule of thumb: the action's domain should match the entity's prefix -
 
 ### The D200 firmware screensaver
 
-If a screensaver was ever set with the official Ulanzi app, the **device's own
-firmware** will eventually take the screen over. While it is showing, the D200
-stops reporting button presses to the host and ignores writes — it is
-unresponsive until physically unplugged.
+When the host goes quiet for about two minutes, the deck's **own firmware**
+locks onto its screensaver image. While locked it reports **no key presses**
+and pressing keys doesn't dismiss it — yet writes still succeed, so the deck
+looks healthy and deaf at once. (Tested on firmware 5.3.6; see
+[the protocol guide](guides/d200-protocol.md#lock-screen-and-screensaver).)
 
-This is **not** something HomeDeck controls: `sleep_timeout: 0` has no effect on
-it, and the protocol has no command to disable or clear it. The five outbound
-commands HomeDeck knows are set-buttons, partial-update, small-window-data,
-brightness and label-style; the Ulanzi app uses commands nobody has
-reverse-engineered.
+HomeDeck now handles it:
 
-What this fork does is **notice and recover**: if the deck ignores writes for
-`DEVICE_TIMEOUT` seconds (10 by default), HomeDeck closes the handle and
-reconnects rather than sitting there silently. That does not defeat the
-screensaver, but it does mean the deck comes back on its own where it
-previously needed an unplug.
+- The small-window update it sends every second counts as host traffic, which
+  keeps the lock from happening while HomeDeck runs.
+- Connecting sends **unlock** (`0x05`, a command Ulanzi Studio never sends), so
+  a deck that locked while HomeDeck was stopped starts listening again.
+- The keep-alive loop sends unlock every 30 seconds as well, in case a stall
+  let the lock happen. On an unlocked deck it changes nothing on screen.
 
-To actually stop it, in rough order of preference:
+The image itself can be set from the configuration:
 
-1. Look for a screensaver **timeout/duration** setting in the Ulanzi app and set
-   it to Never, if offered.
-2. Set a **fully black image** as the screensaver. It still swallows input while
-   active, but nothing visible changes on a wall-mounted deck.
-3. Ask Ulanzi support how to disable a screensaver or factory-reset the device —
-   there is no documented reset, and guessing at button combinations risks
-   bricking the firmware.
-4. Capture the USB traffic while the official app sets a screensaver and add the
-   command to `strmdck`. The packet framing is simple (`7c7c`, 2-byte command,
-   4-byte little-endian length, 1016-byte payload), so a new command ID drops
-   straight in. See
-   [Reverse-engineering D200 commands](guides/reverse-engineering-usb.md) and
-   [`tools/scan_d200.py`](tools/scan_d200.py).
+```yaml
+screensaver: saver.jpg   # in assets/; Ulanzi Studio sends a 1220x708 JPEG
+```
+
+As a further backstop, if the deck stops taking writes for `DEVICE_TIMEOUT`
+seconds (10 by default) HomeDeck closes the handle and reconnects.
 
 ### Editing the configuration from Home Assistant
 

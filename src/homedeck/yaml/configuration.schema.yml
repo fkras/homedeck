@@ -507,6 +507,36 @@ properties:
     examples:
       - 90
 
+  deck_sleep_timeout:
+    type: integer
+    minimum: 0
+    title: The deck's own sleep-time setting, in minutes
+    description: >-
+      Sent to the deck as Ulanzi Studio does on every connect (protocol 0x1a).
+      Ulanzi Studio offers 0, 5, 15, 30, 60 and 120, and sends 0 by default.
+      It does not stop the firmware locking onto its screensaver when the host
+      goes quiet; HomeDeck's keep-alive and unlock handle that.
+    examples:
+      - 0
+
+  alert_on_error:
+    type: boolean
+    title: Flash the deck's "!" on a key whose Home Assistant action failed
+    description: >-
+      Covers a call Home Assistant refuses (unknown entity, wrong domain,
+      missing permission) and one that never gets sent (connection lost).
+
+  screensaver:
+    oneOf:
+      - type: 'null'
+      - type: string
+    title: Image the deck's firmware shows as its screensaver, relative to assets/
+    description: >-
+      Uploaded when HomeDeck starts and whenever the file or this setting
+      changes. Ulanzi Studio sends a 1220x708 JPEG; other formats are converted.
+    examples:
+      - screensaver.jpg
+
   sleep:
     title: Sleep mode configuration when inactive
     examples:

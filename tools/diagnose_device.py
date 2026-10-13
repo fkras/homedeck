@@ -15,12 +15,21 @@ try:
 except ImportError:
     sys.exit('hidapi not installed - run this with the venv python ($HD_PY)')
 
-try:
-    from strmdck.device_manager import DEVICE_MAP
-except ImportError:
-    sys.exit('strmdck not installed - run this with the venv python ($HD_PY)')
+import os
 
+try:
+    from dotenv import load_dotenv
+    from homedeck.d200 import D200_PRODUCT_ID, D200_VENDOR_ID, UlanziD200
+except ImportError:
+    sys.exit('homedeck not installed - run this with the venv python ($HD_PY)')
+
+load_dotenv()
 ULANZI_VENDOR_ID = 0x2207
+# What HomeDeck will open: the defaults, or the .env overrides
+DEVICE_MAP = {
+    (int(os.getenv('DECK_VENDOR_ID') or f'{D200_VENDOR_ID:04x}', 16),
+     int(os.getenv('DECK_PRODUCT_ID') or f'{D200_PRODUCT_ID:04x}', 16)): UlanziD200,
+}
 
 
 def main():
@@ -70,9 +79,9 @@ def main():
         print('   HomeDeck knows, so auto_connect() returns None.')
         print()
         print('   This is what a firmware update looks like. To try the new ID,')
-        print('   edit the venv copy of strmdck:')
+        print('   set it in .env (hex, without 0x) and restart HomeDeck:')
         print()
-        print('     strmdck/devices/ulanzi_d200.py  ->  USB_PRODUCT_ID = 0x....')
+        print('     DECK_PRODUCT_ID="...."')
         print()
         print('   Use the product ID printed above.')
     else:

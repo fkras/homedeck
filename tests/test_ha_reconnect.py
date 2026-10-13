@@ -13,7 +13,7 @@ import socket
 
 import pytest
 from PIL import Image
-from strmdck.device import ButtonAction
+from homedeck.d200 import ButtonAction
 from websockets.asyncio.server import serve
 
 from homedeck.connecting import spinner_frames

@@ -12,11 +12,10 @@ license = {file = "LICENSE"}
 keywords = ["streamdeck", "stream deck", "stream-deck"]
 requires-python = ">=3.9"
 dependencies = [
-    "strmdck==0.1.0rc1",
     "cairosvg==2.7.1",
-    "construct==2.10.70",
     "deepdiff==8.2.0",
     "fastapi[standard]==0.115.11",
+    "hidapi==0.14.0.post4",
     "httpx==0.28.1",
     "Jinja2==3.1.5",
     "jsonschema==4.23.0",

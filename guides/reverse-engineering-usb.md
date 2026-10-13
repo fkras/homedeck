@@ -1,20 +1,28 @@
 # Reverse-engineering D200 commands from USB traffic
 
 How to capture what the official Ulanzi app sends, identify an unknown command,
-and add it to HomeDeck. Written for the firmware screensaver — which HomeDeck
-currently cannot disable — but the method works for any missing feature.
+and add it to HomeDeck.
+
+> [!NOTE]
+> Most of what this guide set out to find has since been read out of Ulanzi
+> Studio itself and from captures - every protocol ID, the screensaver lock
+> and unlock, the full small-window format. See
+> [d200-protocol.md](d200-protocol.md). A capture is still the way to settle
+> anything new.
 
 ## What we already know
 
-The D200 speaks a simple framed protocol over USB HID. Every outgoing packet is
-exactly **1024 bytes**:
+The D200 speaks a simple framed protocol over USB HID. Frames are sent as
+**1024-byte** reports (each prefixed with report ID 0); only the first carries
+the header:
 
 | Offset | Size | Field |
 |:--|:--|:--|
 | 0 | 2 | Magic `7c 7c` (`\|\|`) |
-| 2 | 2 | Command ID, **big-endian** |
+| 2 | 1 | Command code: 0 host request, 1 device event, 3 device reply |
+| 3 | 1 | Protocol ID |
 | 4 | 4 | Payload length, **little-endian** |
-| 8 | 1016 | Payload, zero-padded |
+| 8 | n | Payload, then `00 00`, zero-padded to a multiple of 1024 |
 
 Real packets, for reference while scanning a capture:
 
@@ -24,24 +32,12 @@ small_window         7c7c 0006 10000000 317c30...   payload "1|0|0|12:00:00|0"
 set_buttons          7c7c 0001 04000000 504b0304... payload is a ZIP (PK..)
 ```
 
-Known command IDs:
+Read as one 16-bit value, bytes 2-3 give the "command IDs" earlier notes
+used (`0x000a`, `0x0101`, `0x0303`). The full table of protocol IDs is in
+[d200-protocol.md](d200-protocol.md#protocol-ids).
 
-| ID | Direction | Meaning |
-|:--|:--|:--|
-| `0x0001` | out | Set all buttons (ZIP payload) |
-| `0x0006` | out | Small-window data |
-| `0x000a` | out | Brightness |
-| `0x000b` | out | Label style (JSON) |
-| `0x000d` | out | Partial button update |
-| `0x0101` | in | Button press |
-| `0x0303` | in | Device info |
-
-So the screensaver command is very likely an unused low ID — `0x0002`–`0x0005`,
-`0x0007`–`0x0009`, `0x000c`, or `0x000e`+ — carrying either JSON (like label
-style) or an image/ZIP payload.
-
-**The goal:** find the packet the app sends when you set or clear a screensaver,
-then replay it.
+**The goal:** find the packet the app sends for a feature HomeDeck lacks, then
+replay it.
 
 ## Choosing a capture method
 
@@ -189,31 +185,26 @@ so the two don't fight over the device:
 systemctl stop homedeck        # or homedeck-server
 ```
 
-```python
-#!/usr/bin/env python3
-"""Send one raw command to the D200."""
-from strmdck.device_manager import auto_connect
-from strmdck.devices.ulanzi_d200 import PacketStruct
-
-COMMAND = 0x0000        # <- the unknown ID from your capture
-PAYLOAD = b''           # <- the payload bytes, or b'' to try clearing
-
-device = auto_connect()
-assert device, 'No deck found'
-
-packet = PacketStruct.build(dict(
-    command_protocol=COMMAND,
-    length=None,
-    data=PAYLOAD,
-))
-device._hid_device.write(packet)
-print(f'Sent 0x{COMMAND:04x} with {len(PAYLOAD)} byte payload')
-```
-
-Run it with the venv's Python:
+Then send it with [`tools/d200_cli.py`](../tools/d200_cli.py), giving the
+protocol ID (byte 3 of the header) and the payload:
 
 ```bash
-$HD_PY send_raw.py
+$HD_PY tools/d200_cli.py raw 0x1a 0
+```
+
+For binary payloads, use the layer from Python:
+
+```python
+import asyncio
+from homedeck.d200 import UlanziD200
+
+async def main():
+    deck = UlanziD200.open()
+    deck.send_raw(0x09, open('payload.bin', 'rb').read())
+    await deck.flush(10)
+    deck.close()
+
+asyncio.run(main())
 ```
 
 If the payload is JSON, try variations — an empty string, `{"Enable":false}`,
@@ -226,41 +217,33 @@ a zero duration — mirroring the field names you saw in the capture.
 
 ## Adding it to HomeDeck
 
-Once a command works reliably, wire it in. `strmdck` is a separate package, so
-either fork it or add a small override in this repo.
+Once a command works reliably, wire it in. The communications layer lives in
+`src/homedeck/d200/`.
 
-**1. Add the command ID** in `strmdck/devices/ulanzi_d200.py`:
+**1. Name the protocol ID** in `protocol.py`, and add a payload builder there
+if it needs one (pure functions, so they can be tested against the capture):
 
 ```python
-class CommandProtocol(Enum):
+class Protocol(IntEnum):
     ...
-    OUT_SET_SCREENSAVER = 0x000X    # whatever you found
+    SCREENSAVER = 0x09
 ```
 
-**2. Add a method** on `UlanziD200Device`:
+**2. Add a method** on `UlanziD200` in `device.py`. Pass a key to `_put()` if
+only the newest value matters, so queued stale ones are dropped:
 
 ```python
-def set_screensaver(self, enabled: bool):
-    packet = PacketStruct.build(dict(
-        command_protocol=CommandProtocol.OUT_SET_SCREENSAVER.value,
-        length=None,
-        data=json.dumps({'Enable': enabled}).encode('utf-8'),
-    ))
-    self._write_packet(packet)
+def set_screensaver(self, image: bytes):
+    self._put('screensaver', Protocol.SCREENSAVER, screensaver_payload(image))
 ```
+
+(and add `'screensaver'` to `_Outbox.LATEST_WINS`).
 
 **3. Call it from HomeDeck** — the natural place is `reload_all()` in
-`src/homedeck/homedeck.py`, next to `set_label_style()`, so it is reapplied on
-every config load:
-
-```python
-self._device.set_label_style(asdict(configuration.label_style))
-self._device.set_screensaver(False)
-```
-
-Then expose it as a config key (`screensaver: false`) in
+`src/homedeck/homedeck.py`, next to `set_label_style()` and `set_sleep_time()`,
+so it is reapplied on every config load. Then expose it as a config key in
 `configuration.base.yml` and `configuration.schema.yml`, following how
-`brightness` is wired up.
+`deck_sleep_timeout` is wired up.
 
 ## Capturing the first-connection handshake
 
@@ -315,6 +298,13 @@ SSD210V100) produced this handshake, all host -> device:
 
 Two findings.
 
+> [!NOTE]
+> Resolved: `0x001a` is the deck's **sleep-time setting** in minutes, which the
+> app sends after every device-info reply (`"0"` by default). It is *not* the
+> screensaver problem: the deck locks onto its screensaver when the host goes
+> quiet for about two minutes, and `0x05` unlocks it. See
+> [d200-protocol.md](d200-protocol.md#lock-screen-and-screensaver).
+
 **`0x001a` is a new command**, payload a single ASCII `"0"`, sent right after
 brightness on every connection. A one-byte 0/1 value looks like a toggle. It is
 the best current candidate for the screensaver or background switch, but this
@@ -348,7 +338,7 @@ If you see no unknown command:
 - Capture the app's **first connection** to the deck — start the capture, then
   plug the deck in.
 - Check whether the app talks over a **second HID interface**. The D200 exposes
-  more than one (`/dev/hidraw0` and `hidraw1` on Linux); `strmdck` uses only one
+  more than one (`/dev/hidraw0` and `hidraw1` on Linux); HomeDeck opens only one
   of them, and the config channel may be the other.
 
 That last point is the most likely explanation if everything else looks normal,
