@@ -127,7 +127,10 @@ class PageElement:
         total_skipped = 0
         for index, button in enumerate(deepcopy(self._page_config.buttons_raw)):
             if not button:
-                new_raws[index] = None
+                # An empty key moves up past gone buttons like any other.
+                # At its raw index it could land on the key the next button
+                # takes, leaving a hole the paging below miscounted.
+                new_raws[index - total_skipped] = None
                 continue
 
             # Get entity_id for self_*() mixins
@@ -176,9 +179,13 @@ class PageElement:
         # Save current buttons
         self._button_raws = new_raws
 
+        def extent():
+            ''' Keys the page spans so far: one past the last one used. '''
+            return max(self._button_raws) + 1 if self._button_raws else 0
+
         start = 0
         tmp_page_number = 1
-        while start < len(new_raws):
+        while start < extent():
             if is_sub_page and tmp_page_number == 1:
                 # Insert Back button for page #1
                 back_button = system_buttons[ButtonElementAction.PAGE_BACK]
@@ -190,7 +197,10 @@ class PageElement:
                 if previous_button.position > 0:
                     self._insert_button_at(previous_button.button, start + (previous_button.position - 1))
 
-            if start + buttons_per_page < len(new_raws):
+            # Counted after this pass's own Back or Previous went in: either
+            # can push the last button of a full sub-page onto the next one,
+            # and without a Next key nothing on the deck leads there
+            if start + buttons_per_page < extent():
                 next_button = system_buttons[ButtonElementAction.PAGE_NEXT]
                 self._insert_button_at(next_button.button, start + (next_button.position - 1))
 
