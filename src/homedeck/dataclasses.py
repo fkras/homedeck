@@ -145,6 +145,9 @@ class PageButtonConfig:
     states: Optional[Dict[str, Dict]] = field(default_factory=lambda: {})
     is_dynamic: Optional[bool] = False
 
+    # Seconds to cross-fade the key when its image changes on a state change
+    transition: Optional[float] = None
+
     material_you_color: Optional[str] = field(default=None, metadata={'icon': True, 'text_icon': True})
     material_you_scheme: Optional[str] = field(default=None, metadata={'icon': True, 'text_icon': True})
 

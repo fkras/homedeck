@@ -44,6 +44,14 @@ class ButtonElement:
     def name(self):
         return self._config.name
 
+    @property
+    def transition(self) -> float:
+        ''' Seconds to cross-fade into this look; 0 switches at once. '''
+        try:
+            return max(0.0, float(self._config.transition or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
     def get_icon(self):
         return icon_provider.get_icon(self._config)
 

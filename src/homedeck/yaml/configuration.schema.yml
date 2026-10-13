@@ -140,6 +140,19 @@ $defs:
       - type: string
         pattern: '^(-?[\d]+) (-?[\d]+)$'
 
+  Transition:
+    title: Seconds to cross-fade the key into a new look
+    description: >-
+      When the key's image changes on a state change - a light turning on, a
+      switch turning off - HomeDeck fades from the old image to the new one
+      over this many seconds, instead of switching at once. The deck shows
+      about 10 steps a second. 0 or unset switches instantly.
+    type: number
+    minimum: 0
+    maximum: 5
+    examples:
+      - 0.8
+
   Page:
     title: Page layout
     description: Defines a page with a name and list of buttons
@@ -346,6 +359,8 @@ $defs:
         anyOf:
           - $ref: '#/$defs/Visibility'
           - type: string
+      transition:
+        $ref: '#/$defs/Transition'
 
       material_you_color:
         $ref: '#/$defs/ButtonIcon/properties/material_you_color'
@@ -435,6 +450,8 @@ $defs:
           - $ref: '#/$defs/Visibility'
           - type: string
         description: Controls whether the button is shown, hidden, or gone
+      transition:
+        $ref: '#/$defs/Transition'
 
       material_you_color:
         description: Base color for Material You
