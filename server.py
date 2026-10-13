@@ -293,6 +293,20 @@ async def update_configuration(req: Request):
     return {'error': 'Invalid configuration'}
 
 
+@app.get(f'/v{API_VERSION}/base_configuration')
+async def get_base_configuration():
+    '''
+    The defaults the user's configuration is merged onto: built-in presets
+    ($default, $page, $light, ...), the system buttons and their positions.
+
+    Read-only. The add-on's visual editor needs it to preview a button the way
+    the deck will draw it, and it changes between HomeDeck versions.
+    '''
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    with open(os.path.join(current_dir, 'src', 'homedeck', 'yaml', 'configuration.base.yml'), 'r', encoding='utf-8') as fp:
+        return {'data': {'content': fp.read()}}
+
+
 @app.get(f'/v{API_VERSION}/schema')
 async def get_schema():
     '''

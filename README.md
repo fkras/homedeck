@@ -29,6 +29,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | `optipng` is off by default (`ENABLE_OPTIPNG=1` re-enables) | It saved a little disk space but cost hundreds of ms per icon on an SBC |
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
+| Added `GET /v1/base_configuration` to the server | The add-on's visual editor previews buttons with HomeDeck's built-in presets and system buttons, which change between versions |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
 | Added the `cbi:` icon source | Brand logos for devices and services (Spotify, Sonos, IKEA, Tesla, …), which neither MDI nor Phosphor covers |
 | Writes the deck's 14th manifest slot | The official app sends 14 slots keyed `{col}_{row}`, ending with `3_2`; strmdck stopped at 13, so that slot kept whatever the firmware drew there — the Ulanzi logo and URL behind the small window |
