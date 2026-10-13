@@ -80,15 +80,74 @@ def prepare_mdns_service_info():
     )
 
 
+SCRIPT_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), SCRIPT_NAME))
+
+# python, python3, python3.11, Python (macOS framework builds), pythonw.exe, ...
+PYTHON_RE = re.compile(r'^pythonw?[\d.]*(\.exe)?$', re.IGNORECASE)
+
+def script_of(cmdline) -> Optional[str]:
+    ''' The script a Python command line runs, or None if it isn't Python
+    running a script file (`python -c`, `python -m`, anything else). '''
+    if not cmdline or not PYTHON_RE.match(os.path.basename(cmdline[0])):
+        return None
+
+    args = iter(cmdline[1:])
+    for arg in args:
+        if arg == '--':
+            return next(args, None)
+        if arg == '-':
+            # A script on stdin
+            return None
+        if arg.startswith('--'):
+            if arg == '--check-hash-based-pycs':
+                next(args, None)
+            continue
+        if arg.startswith('-'):
+            # A cluster of short options, like -u or -uc. -c and -m end the
+            # options with code or a module rather than a script; -W and -X
+            # take a value, the rest of the cluster or the next argument.
+            for i, flag in enumerate(arg[1:]):
+                if flag in 'cm':
+                    return None
+                if flag in 'WX':
+                    if i == len(arg) - 2:
+                        next(args, None)
+                    break
+            continue
+        return arg
+
+    return None
+
+
+def is_deck_process(cmdline, cwd: Optional[str], script_path: str = SCRIPT_PATH) -> bool:
+    ''' Whether a process is Python running this repo's deck.py. '''
+    script = script_of(cmdline)
+    if not script or os.path.basename(script) != SCRIPT_NAME:
+        return False
+
+    if os.path.isabs(script):
+        return os.path.realpath(script) == script_path
+
+    if cwd:
+        return os.path.realpath(os.path.join(cwd, script)) == script_path
+
+    # Its working directory is hidden (another user's process): Python
+    # running a deck.py is most likely this one, and starting a second would
+    # fight it for the deck
+    return True
+
+
 def is_script_running():
-    """Check if script_x.py is already running"""
-    for proc in psutil.process_iter(attrs=['pid', 'name', 'cmdline']):
+    ''' Whether deck.py is already running, started by us or anything else
+    (homedeck.service, a shell).
+
+    It used to match any process with "deck.py" anywhere in its command line,
+    so a `python -c` mentioning it, an editor with it open, or another
+    project's deck.py made the server refuse to start the deck and report it
+    stopped. '''
+    for proc in psutil.process_iter(attrs=['pid', 'cmdline', 'cwd']):
         try:
-            cmdline = proc.info['cmdline']
-            if cmdline and any(SCRIPT_NAME in arg for arg in cmdline):
-                return True
-            # Windows fallback: check process name
-            if proc.info['name'] in ('python.exe', 'python3.exe') and cmdline and SCRIPT_NAME in cmdline:
+            if is_deck_process(proc.info['cmdline'], proc.info['cwd']):
                 return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
