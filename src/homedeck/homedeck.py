@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 from dataclasses import asdict
+from typing import Dict, Optional
 
 import psutil
 import yaml
@@ -19,11 +20,12 @@ from websockets.exceptions import ConnectionClosed
 from .configuration import Configuration
 from .connecting import spinner_frames
 from .d200 import ButtonAction, DeviceInfoEvent, SmallWindowMode, auto_connect
-from .elements import InteractionType, PageElement
+from .elements import ButtonElement, InteractionType, PageElement
 from .enums import SleepStatus
 from .event_bus import EventName, event_bus
 from .home_assistant import HomeAssistantUnavailable, HomeAssistantWebSocket
 from .icons import CACHE_GENERATED_DIR
+from .transitions import crossfade_frames, frame_count
 from .utils import deep_merge, local_now
 
 load_dotenv()
@@ -273,14 +275,91 @@ class HomeDeck:
             # cleared. Sending it blank is what the official app does.
             slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS
             buttons = PageElement.generate(page.buttons, slot_count=slot_count)
+            # A fade still running would paint its frames over the new page
+            self._cancel_transitions()
             self._device.set_buttons(buttons)
+            self._shown_keys().clear()
+            self._shown_keys().update(buttons)
         else:
             # Only update changed buttons
             buttons = PageElement.generate(page.changed_buttons)
-            self._device.set_buttons(buttons, update_only=True)
+            self._send_changed(buttons, page.changed_buttons)
 
         self._current_page_element = page
         return True
+
+    # -- transitions --------------------------------------------------------
+
+    def _shown_keys(self) -> Dict[int, Optional[dict]]:
+        ''' What each key shows now, as sent: {'name', 'icon'} or None. '''
+        return self.__dict__.setdefault('_shown', {})
+
+    def _transition_tasks(self) -> Dict[int, asyncio.Task]:
+        return self.__dict__.setdefault('_transitions', {})
+
+    def _send_changed(self, buttons: Dict[int, Optional[dict]], elements: Dict[int, ButtonElement]):
+        ''' Send changed keys, cross-fading the ones whose button has a
+        `transition` from the image the key shows now. '''
+        immediate = {}
+        for index, button in buttons.items():
+            element = elements.get(index)
+            old = self._shown_keys().get(index)
+            fade = (
+                element is not None and element.transition > 0
+                and button and old
+                and button.get('icon') and old.get('icon')
+                and button['icon'] != old['icon']
+            )
+            if fade and self._start_transition(index, old, button, element.transition):
+                continue
+
+            self._cancel_transition(index)
+            immediate[index] = button
+
+        if immediate:
+            self._device.set_buttons(immediate, update_only=True)
+            self._shown_keys().update(immediate)
+
+    def _start_transition(self, index: int, old: dict, new: dict, duration: float) -> bool:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        self._cancel_transition(index)
+        self._transition_tasks()[index] = loop.create_task(self._run_transition(index, old, new, duration))
+        return True
+
+    async def _run_transition(self, index: int, old: dict, new: dict, duration: float):
+        steps = frame_count(duration)
+        try:
+            # Drawn off the event loop: a dozen PNGs is noticeable on an SBC
+            frames = await asyncio.get_running_loop().run_in_executor(None, crossfade_frames, old['icon'], new['icon'], steps)
+        except Exception as e:
+            print(f'⚠️ Could not draw the transition for key {index}: {e}')
+            frames = []
+
+        # The label switches with the first frame; only the image fades
+        for name in frames:
+            frame = {**new, 'icon': name}
+            self._device.set_buttons({index: frame}, update_only=True)
+            self._shown_keys()[index] = frame
+            await asyncio.sleep(duration / steps)
+
+        self._device.set_buttons({index: new}, update_only=True)
+        self._shown_keys()[index] = new
+        if self._transition_tasks().get(index) is asyncio.current_task():
+            del self._transition_tasks()[index]
+
+    def _cancel_transition(self, index: int):
+        task = self._transition_tasks().pop(index, None)
+        if task:
+            task.cancel()
+
+    def _cancel_transitions(self):
+        for task in self._transition_tasks().values():
+            task.cancel()
+        self._transition_tasks().clear()
 
     async def _read_packets(self):
         button_index = None
@@ -640,6 +719,8 @@ class HomeDeck:
 
     def _reset(self):
         self._is_ready = False
+        self._cancel_transitions()
+        self._shown_keys().clear()
 
         if hasattr(self, '_device') and self._device:
             self._device.close()
@@ -792,6 +873,8 @@ class HomeDeck:
 
     async def _show_connecting(self):
         ''' Animate a spinner on the deck until cancelled. '''
+        self._cancel_transitions()
+        self._shown_keys().clear()
         frames = spinner_frames(self._device.ICON_WIDTH)
         slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS
         # The page that was up is being replaced, and the session that follows
