@@ -5,7 +5,7 @@ import os
 import jsonschema
 import jsonschema.exceptions
 import yaml
-from strmdck.device import DeckDevice
+from .d200 import UlanziD200 as DeckDevice
 
 from .dataclasses import MainConfig
 from .elements import PageElement
@@ -53,6 +53,18 @@ class Configuration:
     @property
     def sleep(self):
         return self._config.sleep
+
+    @property
+    def deck_sleep_timeout(self):
+        return self._config.deck_sleep_timeout
+
+    @property
+    def alert_on_error(self):
+        return self._config.alert_on_error
+
+    @property
+    def screensaver(self):
+        return self._config.screensaver
 
     @property
     def system_buttons(self):

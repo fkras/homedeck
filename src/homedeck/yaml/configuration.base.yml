@@ -2,6 +2,17 @@
 # EDIT assets/configuration.yml INSTEAD
 brightness: 80
 
+# The D200's sleep-time setting, in minutes, as Ulanzi Studio sends it (its
+# default is 0). Dimming is handled by "sleep" below.
+deck_sleep_timeout: 0
+
+# Flash the deck's "!" on a key whose Home Assistant action failed
+alert_on_error: true
+
+# Image for the deck's own screensaver, relative to assets/ (e.g.
+# screensaver.jpg). Unset leaves whatever the deck has.
+screensaver: null
+
 label_style:
   align: bottom
   color: FFFFFF

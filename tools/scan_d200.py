@@ -13,14 +13,25 @@ import sys
 import binascii
 from collections import Counter
 
+# (command code, protocol id) -> name. Byte 2 of the header is the command
+# code (0 host request, 1 device event, 3 device reply), byte 3 the protocol.
+# See guides/d200-protocol.md.
 KNOWN = {
-    0x0001: 'SET_BUTTONS',
-    0x0006: 'SET_SMALL_WINDOW_DATA',
-    0x000a: 'SET_BRIGHTNESS',
-    0x000b: 'SET_LABEL_STYLE',
-    0x000d: 'PARTIALLY_UPDATE_BUTTONS',
-    0x0101: 'IN_BUTTON',
-    0x0303: 'IN_DEVICE_INFO',
+    (0, 0x01): 'SET_BUTTONS (page ZIP)',
+    (0, 0x03): 'GET_DEVICE_INFO',
+    (0, 0x04): 'LOCK_SCREEN',
+    (0, 0x05): 'UNLOCK_SCREEN (never sent by the app)',
+    (0, 0x06): 'SMALL_WINDOW',
+    (0, 0x09): 'SCREENSAVER (ZIP)',
+    (0, 0x0a): 'BRIGHTNESS',
+    (0, 0x0b): 'LABEL_STYLE',
+    (0, 0x0c): 'FIRMWARE (bin.zip)',
+    (0, 0x0d): 'UPDATE_BUTTONS (partial ZIP)',
+    (0, 0x1a): 'SLEEP_TIME (minutes, 0 = never)',
+    (0, 0xe0): 'RESULT_OVERLAY (ZIP)',
+    (1, 0x01): 'IN_KEY_EVENT',
+    (1, 0x0b): 'IN_LABEL_STYLE_REQUEST',
+    (3, 0x03): 'IN_DEVICE_INFO',
 }
 
 
@@ -32,12 +43,12 @@ def scan(blob: bytes):
         if offset == -1 or offset + 8 > len(blob):
             break
 
-        command = int.from_bytes(blob[offset + 2:offset + 4], 'big')
+        command = (blob[offset + 2], blob[offset + 3])
         length = int.from_bytes(blob[offset + 4:offset + 8], 'little')
 
-        # Sanity-check: the payload can't exceed the 1016-byte frame body
-        if 0 < length <= 1016:
-            yield offset, command, length, blob[offset + 8:offset + 8 + length]
+        # Sanity-check: ZIPs span many reports, but nothing is near 100 MB
+        if command[0] in (0, 1, 3) and 0 <= length <= 0x6400000:
+            yield offset, command, length, blob[offset + 8:offset + 8 + min(length, 1016)]
 
         offset += 2
 
@@ -52,7 +63,7 @@ def main(path):
         name = KNOWN.get(command, '*** UNKNOWN ***')
         preview = payload[:48]
         printable = ''.join(chr(b) if 32 <= b < 127 else '.' for b in preview)
-        print(f'@{offset:<8} cmd=0x{command:04x} len={length:<5} {name}')
+        print(f'@{offset:<8} cc={command[0]} pid=0x{command[1]:02x} len={length:<7} {name}')
         print(f'          hex   {binascii.hexlify(preview).decode()}')
         print(f'          ascii {printable}')
         print()
@@ -61,7 +72,7 @@ def main(path):
     print('Command summary:')
     for command, count in sorted(seen.items()):
         name = KNOWN.get(command, '*** UNKNOWN - INVESTIGATE ***')
-        print(f'  0x{command:04x}  x{count:<5} {name}')
+        print(f'  cc={command[0]} pid=0x{command[1]:02x}  x{count:<5} {name}')
 
 
 if __name__ == '__main__':

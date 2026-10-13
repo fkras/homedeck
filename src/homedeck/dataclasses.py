@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional, Tuple, Union
 
 from deepdiff import DeepDiff
-from strmdck.device import DeckDevice
+from .d200 import UlanziD200 as DeckDevice
 
 from .enums import ButtonElementAction, IconSource
 from .template import has_jinja_template
@@ -309,6 +309,12 @@ class MainConfig:
     brightness: int = field(default=100)
     label_style: LabelStyleConfig = None
     sleep: SleepConfig = None
+    # The deck's sleep-time setting in minutes (0x1a), as Ulanzi Studio sends it
+    deck_sleep_timeout: int = field(default=0)
+    # Flash the deck's "!" on a key whose Home Assistant call failed
+    alert_on_error: bool = field(default=True)
+    # Image the deck's firmware shows as its screensaver, relative to assets/
+    screensaver: Optional[str] = field(default=None)
 
     pages: Dict[str, PageConfig] = field(default_factory=lambda: {})
     presets: Dict[str, Dict] = field(default_factory=lambda: {})
@@ -344,7 +350,7 @@ class MainConfig:
             self.pages[page_id] = page_config
 
     def __eq__(self, other: MainConfig):
-        same = self.brightness == other.brightness and self.label_style == other.label_style and self.sleep == other.sleep and not DeepDiff(self.presets, other.presets)
+        same = self.brightness == other.brightness and self.label_style == other.label_style and self.sleep == other.sleep and self.deck_sleep_timeout == other.deck_sleep_timeout and self.alert_on_error == other.alert_on_error and self.screensaver == other.screensaver and not DeepDiff(self.presets, other.presets)
         if not same:
             return False
 

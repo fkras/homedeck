@@ -12,18 +12,18 @@ from dataclasses import asdict
 import psutil
 import yaml
 from dotenv import load_dotenv
-from strmdck.device import ButtonAction
-from strmdck.device_manager import auto_connect
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from websockets.exceptions import ConnectionClosed
 
 from .configuration import Configuration
 from .connecting import spinner_frames
+from .d200 import ButtonAction, DeviceInfoEvent, SmallWindowMode, auto_connect
 from .elements import InteractionType, PageElement
 from .enums import SleepStatus
 from .event_bus import EventName, event_bus
 from .home_assistant import HomeAssistantUnavailable, HomeAssistantWebSocket
+from .icons import CACHE_GENERATED_DIR
 from .utils import deep_merge, local_now
 
 load_dotenv()
@@ -103,6 +103,9 @@ class HomeDeck:
     # Reconnect after the device has ignored writes for this many seconds
     DEVICE_TIMEOUT = 10
 
+    # Seconds between unlocks sent in case the deck locked itself
+    UNLOCK_INTERVAL = 30
+
     # Wait between attempts to open the deck or reach Home Assistant
     RECONNECT_DELAY = 3
     # While Home Assistant is away: the button the spinner is drawn on (the
@@ -114,19 +117,29 @@ class HomeDeck:
     # Clock format the small window renders: "12H" or "24H"
     CLOCK_FORMAT = '24H'
 
+    # What tapping the small window steps through. The deck has four more
+    # clock styles (SmallWindowMode.CLOCK_2 to CLOCK_5).
+    SMALL_WINDOW_MODES = (SmallWindowMode.STATS, SmallWindowMode.CLOCK, SmallWindowMode.BACKGROUND)
+
     # Slots beyond BUTTON_COUNT to blank explicitly. The D200's manifest has a
-    # 14th entry ("3_2") that the official app writes and strmdck does not.
-    # Set to 0 to send only the buttons strmdck knows about.
+    # 14th entry ("3_2", the large tile) that the official app writes blank.
+    # Set to 0 to send only the 13 keys.
     EXTRA_SLOTS = 1
+
+    # Service calls still waiting on Home Assistant's answer, remembered so a
+    # refusal can flag the key that made it
+    PENDING_SERVICE_KEYS = 64
 
     # How often to check whether configuration.yml changed
     CONFIG_POLL_INTERVAL = 0.2
     # Settle time before reading a config file that was just written
     CONFIG_RELOAD_DEBOUNCE = 0.25
 
-    def __init__(self, vendor_id: int = 0x2207, product_id: int = 0x0019):
-        self._vendor_id = vendor_id
-        self._product_id = product_id
+    def __init__(self, vendor_id: int = None, product_id: int = None):
+        # DECK_VENDOR_ID / DECK_PRODUCT_ID (hex) cover a firmware update that
+        # changes the USB IDs; tools/diagnose_device.py prints the new ones
+        self._vendor_id = vendor_id or int(os.getenv('DECK_VENDOR_ID') or '2207', 16)
+        self._product_id = product_id or int(os.getenv('DECK_PRODUCT_ID') or '0019', 16)
 
         self._configuration_observer = None
         # Set once the first session is up. Unlike _is_ready, _reset() never
@@ -170,20 +183,63 @@ class HomeDeck:
             return False
 
         configuration = self._configuration
-        # await self._write_packet(b'\x01')  # Not sure what this is for
         self._device.set_label_style(asdict(configuration.label_style))
+        self._device.set_sleep_time(configuration.deck_sleep_timeout)
+        self._apply_screensaver(configuration.screensaver)
 
         self.page_go_to('$root', 1, append_stack=True)
         return True
 
-    async def call_ha_service(self, *, domain: str, service: str, service_data: dict):
+    def _apply_screensaver(self, path):
+        ''' Upload the configured screensaver image if it changed. It is ~100KB
+        and the deck keeps it, so it isn't re-sent on every config reload. '''
+        if not path:
+            return
+
+        full_path = os.path.join('assets', path)
         try:
-            await self._ha.call_service(domain=domain, service=service, service_data=service_data)
+            stamp = (full_path, os.path.getmtime(full_path), getattr(self._device, 'device_info', None))
+        except OSError:
+            print(f'⚠️ screensaver {full_path} not found')
+            return
+
+        if stamp == getattr(self, '_screensaver_sent', None):
+            return
+
+        try:
+            self._device.set_screensaver(full_path)
+        except Exception as e:
+            print(f'⚠️ Could not use {full_path} as the screensaver: {e}')
+            return
+        self._screensaver_sent = stamp
+
+    async def call_ha_service(self, *, domain: str, service: str, service_data: dict, key_index: int = None):
+        try:
+            message_id = await self._ha.call_service(domain=domain, service=service, service_data=service_data)
         except Exception:
             # A bare pass here hid the two failures that stop a press from ever
             # reaching Home Assistant: a websocket closed under us, and a
             # malformed action that raises before anything is sent.
             traceback.print_exc()
+            self._alert_key(key_index)
+            return
+
+        if key_index is not None and isinstance(message_id, int):
+            # Home Assistant answers later; _on_ha_command_failed flags the key
+            # if it refuses the call
+            self._pending_service_keys[message_id] = key_index
+            while len(self._pending_service_keys) > self.PENDING_SERVICE_KEYS:
+                self._pending_service_keys.pop(next(iter(self._pending_service_keys)))
+
+    def _on_ha_command_failed(self, message_id, error):
+        self._alert_key(self._pending_service_keys.pop(message_id, None))
+
+    def _alert_key(self, key_index):
+        ''' Flash the deck's "!" on the key whose action failed. '''
+        if key_index is None or not self._device or not getattr(self, '_configuration', None):
+            return
+        if self._configuration.alert_on_error:
+            self._device.show_alert(key_index)
 
     def reload_current_page(self, *, force=False) -> bool:
         return self.reload_page(self._current_page_id, force=force)
@@ -212,9 +268,9 @@ class HomeDeck:
             #
             # One past BUTTON_COUNT: a capture of the official app shows it
             # writes 14 manifest entries, the last being "3_2" (index 13) with
-            # an empty icon. strmdck stops at 13, so whatever the firmware drew
-            # in that slot - the Ulanzi branding behind the small window - is
-            # never cleared. Sending it blank is what the official app does.
+            # an empty icon. Without it, whatever the firmware drew in that
+            # slot - the Ulanzi branding behind the small window - is never
+            # cleared. Sending it blank is what the official app does.
             slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS
             buttons = PageElement.generate(page.buttons, slot_count=slot_count)
             self._device.set_buttons(buttons)
@@ -256,6 +312,16 @@ class HomeDeck:
                 await self._on_interacted(InteractionType.HOLD, button_index, button_state)
 
         async for command in self._device.read_packet():
+            if isinstance(command, DeviceInfoEvent):
+                if not command.solicited:
+                    # Nothing asked: the firmware restarted and lost what it
+                    # showed. The device restores brightness and its sleep
+                    # timer itself; the picture is ours to repaint.
+                    print('⚠️ Deck restarted - repainting')
+                    self._device.restore_small_window()
+                    self.force_reload_current_page()
+                continue
+
             if isinstance(command, ButtonAction):
                 self._last_action_time = time.time()
 
@@ -308,17 +374,26 @@ class HomeDeck:
                     is_holding = False
 
     async def _keep_alive(self):
+        tick = 0
         while True:
             await asyncio.sleep(1)
+            tick += 1
 
             # Keep alive. The device can stop accepting writes without the USB
-            # device disappearing - notably when the D200's own firmware
-            # screensaver takes over, after which it ignores the host entirely.
-            # strmdck swallows write errors, so probe the HID handle directly.
+            # device disappearing; reconnect if it does.
             if not self._device_is_alive():
                 raise DeviceUnresponsiveError(
                     f'Device stopped responding for {self.DEVICE_TIMEOUT}s - reconnecting'
                 )
+
+            # The firmware locks itself onto its screensaver when the host goes
+            # quiet for about two minutes, and while locked it reports no key
+            # presses - with every write still succeeding, so the check above
+            # can't see it. The small window sent each tick keeps that from
+            # happening; this undoes it if a stall let it happen anyway.
+            # Unlocking an unlocked deck changes nothing on screen.
+            if tick % self.UNLOCK_INTERVAL == 0:
+                self._device.unlock_screen()
 
             self._update_sleep_status()
 
@@ -330,8 +405,8 @@ class HomeDeck:
             print('⚠️ keep_alive raised:', e)
             self._unresponsive_since = self._unresponsive_since or time.time()
         else:
-            # strmdck writes asynchronously and hides failures, so a clean
-            # return is not proof of life. Check the HID handle separately.
+            # Writes happen on the device's own thread, so a clean return is
+            # not proof of life. Ask the device how its writes are going.
             if self._hid_is_responsive():
                 self._unresponsive_since = None
                 return True
@@ -352,21 +427,22 @@ class HomeDeck:
 
         Deliberately does NOT send a protocol packet. An earlier version
         re-sent a small-window packet here, which made the deck redraw the
-        clock area a second time every second and flicker visibly. Querying a
-        string descriptor exercises the same USB path without touching the
-        display.
+        clock area a second time every second and flicker visibly. The device
+        reports whether its writes are failing and reads a string descriptor,
+        which exercises the same USB path without touching the display.
         '''
-        hid_device = getattr(self._device, '_hid_device', None)
-        if not hid_device:
+        if not self._device:
             return False
 
         try:
-            hid_device.get_product_string()
+            responsive = self._device.is_responsive()
         except Exception as e:
             print('⚠️ Device did not answer:', e)
             return False
 
-        return True
+        if not responsive:
+            print('⚠️ Device did not answer:', getattr(self._device, 'last_error', None) or 'no reply')
+        return responsive
 
     def _update_sleep_status(self):
         ''' Re-evaluate idle timeouts and the time-of-day schedule once per tick. '''
@@ -478,52 +554,22 @@ class HomeDeck:
 
         button = self._configuration.get_button(self._current_page_id, index)
         if button:
-            await button.trigger_action(self, interaction)
+            await button.trigger_action(self, interaction, index)
 
     def _send_small_window(self):
         ''' Send the small window's periodic update, with real statistics.
 
-        strmdck's keep_alive() sends an empty dict, which defaults cpu, mem and
-        gpu to zero, so the STATS view showed nothing but zeroes. Its payload
-        builder is also short: a capture of the official Ulanzi app shows seven
-        fields, not five -
+        The official app sends all seven fields once a second -
 
-            2|26|41|15:10:28|4|12H|          mode|cpu|mem|time|?|clock|weekday
+            1|5|35|15:10:28|0|12H|           mode|cpu|mem|time|gpu|clock|date
 
-        - and sending the five-field form disturbed rendering. Build the full
-        payload here rather than going through strmdck.
+        - and this is HomeDeck's keep-alive as well.
         '''
-        from strmdck.devices.ulanzi_d200 import CommandProtocol, PacketStruct
-
         stats = self._system_stats()
-        now = local_now()
-
-        mode = getattr(self._device, '_small_window_mode', None)
-        mode_value = getattr(mode, 'value', 1)
-
-        payload = '|'.join([
-            str(mode_value),
-            str(stats['cpu']),
-            str(stats['mem']),
-            now.strftime('%H:%M:%S'),
-            str(stats['gpu']),
-            self.CLOCK_FORMAT,
-            '',                     # weekday, only populated for some modes
-        ])
-
-        packet = PacketStruct.build(dict(
-            command_protocol=CommandProtocol.OUT_SET_SMALL_WINDOW_DATA.value,
-            length=None,
-            data=payload.encode('utf-8'),
-        ))
-
-        self._device._hid_device.write(packet)
+        self._device.set_small_window_data(cpu=stats['cpu'], mem=stats['mem'], gpu=stats['gpu'], now=local_now())
 
     def _system_stats(self) -> dict:
         ''' CPU and memory percentages for the small window's STATS mode.
-
-        strmdck's keep_alive() sends zeroes for all of these, so STATS showed
-        nothing useful.
 
         There is no temperature field. Every field the official app sends is
         accounted for - mode, cpu, mem, time, gpu, clock format, weekday - and
@@ -574,17 +620,15 @@ class HomeDeck:
     def _cycle_small_window_mode(self):
         ''' Step the small window to the next mode and redraw it.
 
-        The raw `state` byte the deck reports for this button is not a mode
-        index - it alternates between values like 1 and 200 - so feeding it
-        straight to set_small_window_mode() only ever resolved to CLOCK, and
-        tapping appeared to do nothing. Track the mode ourselves instead, and
-        push it to the device, which set_small_window_mode() alone does not do.
+        The `state` byte the deck reports for this button alternates between
+        values like 1 and 200 - which match the CLOCK and CLOCK_2 mode IDs, so
+        it looks like the firmware's own idea of the mode, not the one we last
+        sent. Step through our own list and push the result, which
+        set_small_window_mode() alone does not do.
         '''
-        from strmdck.devices.ulanzi_d200 import SmallWindowMode
-
-        modes = list(SmallWindowMode)
+        modes = list(self.SMALL_WINDOW_MODES)
         try:
-            index = modes.index(self._device._small_window_mode)
+            index = modes.index(self._device.small_window_mode)
         except (AttributeError, ValueError):
             index = 0
 
@@ -617,6 +661,7 @@ class HomeDeck:
 
         # Debounce timer for Home Assistant state changes
         self._ha_reload_timer = None
+        self._pending_service_keys = {}
 
     async def _setup(self):
         # Setup event bus
@@ -656,10 +701,25 @@ class HomeDeck:
         device = None
         while True:
             try:
-                device = auto_connect()
+                device = auto_connect(
+                    self._vendor_id,
+                    self._product_id,
+                    icon_dir=CACHE_GENERATED_DIR,
+                    clock_24h=self.CLOCK_FORMAT == '24H',
+                    now=local_now,
+                )
                 if device:
                     self._device = device
-                    print('Device connected')
+                    # What the official app does first: ask who it is talking
+                    # to. The handshake also unlocks a deck that locked onto
+                    # its screensaver while nothing was talking to it, and
+                    # sends the sleep-time setting; reload_all() applies the
+                    # configured value once loaded.
+                    info = await device.handshake(sleep_time=0)
+                    if info:
+                        print(f'Device connected: {info.device_type} {info.serial_number}, firmware {info.firmware_version}')
+                    else:
+                        print('Device connected (it did not report its info)')
                     return
 
                 print('Could not find any device')
@@ -718,6 +778,8 @@ class HomeDeck:
         ''' Connect to Home Assistant, retrying until it answers. '''
         while True:
             self._ha = HomeAssistantWebSocket(HA_HOST, HA_ACCESS_TOKEN)
+            self._ha.on_command_failed = self._on_ha_command_failed
+            self._pending_service_keys = {}
             try:
                 await self._ha.connect()
                 return

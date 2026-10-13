@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from copy import deepcopy
 from typing import Dict
 
@@ -48,7 +47,7 @@ class ButtonElement:
     def get_icon(self):
         return icon_provider.get_icon(self._config)
 
-    async def trigger_action(self, deck: 'HomeDeck', interaction: InteractionType) -> bool:  # type: ignore
+    async def trigger_action(self, deck: 'HomeDeck', interaction: InteractionType, index: int = None) -> bool:  # type: ignore
         if interaction not in self._actions:
             return False
 
@@ -66,7 +65,7 @@ class ButtonElement:
             deck.page_go_to(main_action.data)
         else:
             domain, action = action.split('.')
-            await deck.call_ha_service(domain=domain, service=action, service_data=main_action.data)
+            await deck.call_ha_service(domain=domain, service=action, service_data=main_action.data, key_index=index)
         return True
 
 
@@ -250,10 +249,7 @@ class PageElement:
             icon_name = icon.generated_filename()
             icon_path = os.path.join('.cache', 'icons', '_generated', icon_name)
             if os.path.exists(icon_path):
-                # Copy icon
-                icons_build_path = os.path.join('.build', 'page', 'icons')
-                os.makedirs(icons_build_path, exist_ok=True)
-                shutil.copyfile(icon_path, os.path.join(icons_build_path, icon_name))
+                # The device zips it straight from the cache
                 output[index]['icon'] = icon_name
 
         print('page', output)
