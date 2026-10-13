@@ -153,6 +153,20 @@ $defs:
     examples:
       - 0.8
 
+  TransitionTrigger:
+    title: When the cross-fade (transition) starts
+    description: >-
+      press - when the key is tapped, toward the state its toggle, turn_on or
+      turn_off action leads to, so it fades along with a light that dims
+      itself; it fades back if Home Assistant refuses the action or doesn't
+      report the state within 6 seconds. state - when Home Assistant reports
+      the new state, which can be seconds later for cloud integrations.
+      Other actions, and changes made elsewhere, always fade on the report.
+    enum:
+      - press
+      - state
+    default: press
+
   Page:
     title: Page layout
     description: Defines a page with a name and list of buttons
@@ -361,6 +375,8 @@ $defs:
           - type: string
       transition:
         $ref: '#/$defs/Transition'
+      transition_trigger:
+        $ref: '#/$defs/TransitionTrigger'
 
       material_you_color:
         $ref: '#/$defs/ButtonIcon/properties/material_you_color'
@@ -452,6 +468,8 @@ $defs:
         description: Controls whether the button is shown, hidden, or gone
       transition:
         $ref: '#/$defs/Transition'
+      transition_trigger:
+        $ref: '#/$defs/TransitionTrigger'
 
       material_you_color:
         description: Base color for Material You

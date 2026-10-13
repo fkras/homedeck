@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
-from typing import Dict
+from typing import Dict, Optional
 
 from .dataclasses import (
     PageButtonActionConfig,
@@ -28,6 +28,10 @@ def _is_equal(left, right) -> bool:
 
 
 class ButtonElement:
+    # The button's config before its entity's state was applied, set by
+    # PageElement.render_buttons; None for system buttons
+    source: Optional[dict] = None
+
     def __init__(self, button_config: PageButtonConfig):
         self._config: PageButtonConfig = button_config
         self._actions: Dict[InteractionType, PageButtonActionConfig] = {}
@@ -43,6 +47,12 @@ class ButtonElement:
     @property
     def name(self):
         return self._config.name
+
+    @property
+    def transition_trigger(self) -> str:
+        ''' 'press' to start a fade with the action, 'state' to wait for Home
+        Assistant to report the new state. '''
+        return 'state' if self._config.transition_trigger == 'state' else 'press'
 
     @property
     def transition(self) -> float:
@@ -119,6 +129,46 @@ class PageElement:
         self._button_raws[index] = button
         self._button_elements[index] = self._to_button_element(button)
 
+    @staticmethod
+    def resolve_button(button: dict, all_states: dict) -> dict:
+        ''' How a button looks given these entity states: its entity's icon and
+        name where it sets none, the override for the entity's state, and its
+        templates rendered. Mutates and returns `button`. '''
+        # Get entity_id for self_*() mixins
+        entity_id = None
+        if 'entity_id' in button:
+            entity_id = button['entity_id']
+            states = all_states.get(entity_id)
+            if states:
+                if 'icon' not in button:
+                    # Use icon in states
+                    icon = states.get('attributes', {}).get('icon')
+                    if icon:
+                        button['icon'] = icon
+
+                # Apply presets based on state
+                state = states.get('state')
+                if state and 'states' in button and state in button['states']:
+                    button = deep_merge(button, button['states'][state])
+
+                # Get default name
+                if 'name' not in button:
+                    button['name'] = states.get('attributes', {}).get('friendly_name')
+
+        # Render templates
+        if button.get('is_dynamic'):
+            button = render_template(button, entity_id=entity_id, all_states=all_states)
+
+        return button
+
+    @staticmethod
+    def visibility_of(button: dict):
+        ''' (is_hidden, is_gone) for a resolved button. '''
+        visibility = button.get('visibility', True)
+        is_hidden = visibility is False or visibility == 'False' or visibility == 'hidden'
+        is_gone = visibility is None or visibility == 'None' or visibility == 'gone'
+        return is_hidden, is_gone
+
     def render_buttons(self, *, system_buttons: Dict[ButtonElementAction, SystemButtonConfig], page_number: int = 1, is_sub_page: bool = False, buttons_per_page=0, all_states=dict) -> bool:
         old_raws = self._button_raws
         new_raws = {}
@@ -133,35 +183,11 @@ class PageElement:
                 new_raws[index - total_skipped] = None
                 continue
 
-            # Get entity_id for self_*() mixins
-            entity_id = None
-            if 'entity_id' in button:
-                entity_id = button['entity_id']
-                states = all_states.get(entity_id)
-                if states:
-                    if 'icon' not in button:
-                        # Use icon in states
-                        icon = states.get('attributes', {}).get('icon')
-                        if icon:
-                            button['icon'] = icon
-
-                    # Apply presets based on state
-                    state = states.get('state')
-                    if state and 'states' in button and state in button['states']:
-                        button = deep_merge(button, button['states'][state])
-
-                    # Get default name
-                    if 'name' not in button:
-                        button['name'] = states.get('attributes', {}).get('friendly_name')
-
-            # Render templates
-            if button.get('is_dynamic'):
-                button = render_template(button, entity_id=entity_id, all_states=all_states)
+            source = deepcopy(button)
+            button = self.resolve_button(button, all_states)
 
             # Check visibility
-            visibility = button.get('visibility', True)
-            is_hidden = visibility is False or visibility == 'False' or visibility == 'hidden'
-            is_gone = visibility is None or visibility == 'None' or visibility == 'gone'
+            is_hidden, is_gone = self.visibility_of(button)
 
             if is_hidden:
                 # Hide button
@@ -174,7 +200,12 @@ class PageElement:
             # Save button element
             real_index = index - total_skipped
             new_raws[real_index] = button
-            self._button_elements[real_index] = self._to_button_element(button)
+            element = self._to_button_element(button)
+            if element:
+                # Kept so a press can work out how the key will look in
+                # another state (HomeDeck._predict_press)
+                element.source = source
+            self._button_elements[real_index] = element
 
         # Save current buttons
         self._button_raws = new_raws
@@ -241,7 +272,7 @@ class PageElement:
         return _is_equal(self.button_raws, other.button_raws)
 
     @staticmethod
-    def generate(buttons: Dict[int, ButtonElement], *, slot_count: int = 0):
+    def generate(buttons: Dict[int, ButtonElement], *, slot_count: int = 0, log: bool = True):
         ''' Build the manifest the deck renders.
 
         `slot_count` pads the result with explicit blanks up to that many
@@ -270,5 +301,6 @@ class PageElement:
                 # The device zips it straight from the cache
                 output[index]['icon'] = icon_name
 
-        print('page', output)
+        if log:
+            print('page', output)
         return output

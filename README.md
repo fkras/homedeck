@@ -29,6 +29,7 @@ A lightweight Python library to control Home Assistant using Stream Deck-like de
 | `optipng` is off by default (`ENABLE_OPTIPNG=1` re-enables) | It saved a little disk space but cost hundreds of ms per icon on an SBC |
 | Brightness writes are de-duplicated | The device was being told the same brightness repeatedly |
 | Added `GET /v1/status` to the server | Only `HEAD` existed, so nothing could read the state |
+| Fades start on the press (`transition_trigger`) | Started on Home Assistant's report of the new state, the key's fade trailed the light's by however long the integration took to report - up to seconds. A press now predicts the state and fades at once; the report finds the key already there |
 | Buttons can fade between looks (`transition: 0.8`) | A light that dims in over a second flipped its key instantly. The deck has no animation of its own that we know of, so HomeDeck sends a few blended frames as partial updates (~10 a second over the deck's USB link) and ends on the real image |
 | Added `GET /v1/base_configuration` to the server | The add-on's visual editor previews buttons with HomeDeck's built-in presets and system buttons, which change between versions |
 | Added [`homedeck.service`](homedeck.service) | Start on boot and recover from USB/HA interruptions |
@@ -310,6 +311,7 @@ Define content of the button
 | `visibility`  | Controls button's visibility | `true` | - `true`/`visible`: show button's content<br>- `false`/`hidden`: show an empty button<br>- `null`/`gone`: not showing the button at all (skip it) | ✅ |
 | `states`      | Overrides for the button appearance per entity state | | `ButtonState` | ❌ |
 | `transition`  | Seconds to cross-fade the key into its new look when its state changes, e.g. `0.8` for a dimmable light. Up to `5`; unset or `0` switches at once | | `float` | ❌ |
+| `transition_trigger` | When that fade starts. `press`: on the tap, toward the state a `toggle`/`turn_on`/`turn_off` action on the button's own entity leads to - in step with a light that dims itself - fading back if Home Assistant refuses the action or doesn't report the state within 6s. `state`: when Home Assistant reports the new state, which a cloud integration can take seconds to do | `press` | `press`<br>`state` | ❌ |
 | `icon`<br>`icon_variant`<br>`icon_size`<br>`icon_padding`<br>`icon_offset`<br>`icon_border_radius`<br>`icon_border_width`<br>`icon_border_color`<br>`icon_brightness`<br>`icon_color`<br>`icon_background_color`<br>`icon_size_mode`<br>`z_index` | Icon's properties | | `ButtonIcon` |  |
 | `text`<br>`text_color`<br>`text_align`<br>`text_font`<br>`text_size`<br>`text_offset`<br>`z_index`<br> | Text icon's properties | | `ButtonTextIcon` |  |
 | `additional_icons` | List of additional icon layers | [] | `List[ButtonIcon \| ButtonTextIcon]` | ❌ |

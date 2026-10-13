@@ -147,6 +147,9 @@ class PageButtonConfig:
 
     # Seconds to cross-fade the key when its image changes on a state change
     transition: Optional[float] = None
+    # When that fade starts: 'press' (with the action) or 'state' (on Home
+    # Assistant's report of the new state)
+    transition_trigger: Optional[str] = None
 
     material_you_color: Optional[str] = field(default=None, metadata={'icon': True, 'text_icon': True})
     material_you_scheme: Optional[str] = field(default=None, metadata={'icon': True, 'text_icon': True})

@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, Optional
 
 import psutil
@@ -20,6 +20,7 @@ from websockets.exceptions import ConnectionClosed
 from .configuration import Configuration
 from .connecting import spinner_frames
 from .d200 import ButtonAction, DeviceInfoEvent, SmallWindowMode, auto_connect
+from .dataclasses import PageButtonConfig
 from .elements import ButtonElement, InteractionType, PageElement
 from .enums import SleepStatus
 from .event_bus import EventName, event_bus
@@ -31,6 +32,15 @@ from .utils import deep_merge, local_now
 load_dotenv()
 HA_HOST = os.getenv('HA_HOST')
 HA_ACCESS_TOKEN = os.getenv('HA_ACCESS_TOKEN')
+
+
+@dataclass
+class Prediction:
+    ''' A key fading to the state a press should lead to, until Home
+    Assistant reports it. '''
+    entity_id: str
+    state: str
+    expiry: asyncio.Task
 
 
 class DeviceUnresponsiveError(RuntimeError):
@@ -216,6 +226,10 @@ class HomeDeck:
         self._screensaver_sent = stamp
 
     async def call_ha_service(self, *, domain: str, service: str, service_data: dict, key_index: int = None):
+        # A fading key starts its fade now, together with the light, rather
+        # than once Home Assistant reports the new state back
+        self._predict_press(key_index, domain, service, service_data)
+
         try:
             message_id = await self._ha.call_service(domain=domain, service=service, service_data=service_data)
         except Exception:
@@ -224,6 +238,7 @@ class HomeDeck:
             # malformed action that raises before anything is sent.
             traceback.print_exc()
             self._alert_key(key_index)
+            self._drop_prediction(key_index)
             return
 
         if key_index is not None and isinstance(message_id, int):
@@ -234,7 +249,9 @@ class HomeDeck:
                 self._pending_service_keys.pop(next(iter(self._pending_service_keys)))
 
     def _on_ha_command_failed(self, message_id, error):
-        self._alert_key(self._pending_service_keys.pop(message_id, None))
+        key_index = self._pending_service_keys.pop(message_id, None)
+        self._alert_key(key_index)
+        self._drop_prediction(key_index)
 
     def _alert_key(self, key_index):
         ''' Flash the deck's "!" on the key whose action failed. '''
@@ -277,6 +294,7 @@ class HomeDeck:
             buttons = PageElement.generate(page.buttons, slot_count=slot_count)
             # A fade still running would paint its frames over the new page
             self._cancel_transitions()
+            self._clear_predictions()
             self._device.set_buttons(buttons)
             self._shown_keys().clear()
             self._shown_keys().update(buttons)
@@ -286,6 +304,7 @@ class HomeDeck:
             self._send_changed(buttons, page.changed_buttons)
 
         self._current_page_element = page
+        self._schedule_draw_ahead()
         return True
 
     # -- transitions --------------------------------------------------------
@@ -297,11 +316,25 @@ class HomeDeck:
     def _transition_tasks(self) -> Dict[int, asyncio.Task]:
         return self.__dict__.setdefault('_transitions', {})
 
-    def _send_changed(self, buttons: Dict[int, Optional[dict]], elements: Dict[int, ButtonElement]):
+    def _transition_targets(self) -> Dict[int, dict]:
+        ''' What each running fade ends on. '''
+        return self.__dict__.setdefault('_fading_to', {})
+
+    def _send_changed(self, buttons: Dict[int, Optional[dict]], elements: Dict[int, ButtonElement], *, predicted=False):
         ''' Send changed keys, cross-fading the ones whose button has a
         `transition` from the image the key shows now. '''
         immediate = {}
         for index, button in buttons.items():
+            if not predicted and self._held_by_prediction(index):
+                continue
+
+            # Already fading to it, or showing it: the press predicted it
+            if button is not None and (
+                self._transition_targets().get(index) == button
+                or (index not in self._transition_tasks() and self._shown_keys().get(index) == button)
+            ):
+                continue
+
             element = elements.get(index)
             old = self._shown_keys().get(index)
             fade = (
@@ -328,6 +361,7 @@ class HomeDeck:
 
         self._cancel_transition(index)
         self._transition_tasks()[index] = loop.create_task(self._run_transition(index, old, new, duration))
+        self._transition_targets()[index] = new
         return True
 
     async def _run_transition(self, index: int, old: dict, new: dict, duration: float):
@@ -350,9 +384,11 @@ class HomeDeck:
         self._shown_keys()[index] = new
         if self._transition_tasks().get(index) is asyncio.current_task():
             del self._transition_tasks()[index]
+            self._transition_targets().pop(index, None)
 
     def _cancel_transition(self, index: int):
         task = self._transition_tasks().pop(index, None)
+        self._transition_targets().pop(index, None)
         if task:
             task.cancel()
 
@@ -360,6 +396,173 @@ class HomeDeck:
         for task in self._transition_tasks().values():
             task.cancel()
         self._transition_tasks().clear()
+        self._transition_targets().clear()
+
+    # -- fading on the press --------------------------------------------------
+    #
+    # A light that dims in starts as soon as Home Assistant commands it, but
+    # Home Assistant only reports the new state once the integration does -
+    # from a few hundred ms to seconds later for a cloud one. Waiting for that
+    # put the key's fade well behind the light's. So a press on a fading key
+    # predicts the state its action leads to and fades there at once; the
+    # report then finds the key already there.
+
+    # How long the predicted look waits for Home Assistant to report the state
+    PREDICTION_TIMEOUT = 6
+
+    # Actions whose result a press can predict, and the state they leave
+    # (None: the opposite of the current one)
+    PREDICTABLE_SERVICES = {'toggle': None, 'turn_on': 'on', 'turn_off': 'off'}
+
+    def _predictions(self) -> Dict[int, 'Prediction']:
+        return self.__dict__.setdefault('_predicted', {})
+
+    def _look_in_state(self, element: ButtonElement, entity_id: str, state: str):
+        ''' How a key would look with its entity in `state`: ({'name', 'icon'},
+        its ButtonElement), or None if it would be hidden, gone or has no image
+        yet. Resolved as render_buttons resolves it. '''
+        states = dict(self._ha.all_states)
+        states[entity_id] = {**(states.get(entity_id) or {}), 'state': state}
+
+        resolved = PageElement.resolve_button(copy.deepcopy(element.source), states)
+        if any(PageElement.visibility_of(resolved)):
+            return None
+
+        predicted = ButtonElement(PageButtonConfig(**copy.deepcopy(resolved)))
+        button = PageElement.generate({0: predicted}, log=False)[0]
+        if not button or not button.get('icon'):
+            return None
+
+        return button, predicted
+
+    def _predict_press(self, index: Optional[int], domain: str, service: str, service_data) -> bool:
+        ''' Start a fading key's fade on the press, toward the state its action
+        will leave the entity in. Does nothing when that can't be known. '''
+        page_id = getattr(self, '_current_page_id', None)
+        if index is None or service not in self.PREDICTABLE_SERVICES or page_id is None or not getattr(self, '_configuration', None):
+            return False
+
+        element = self._configuration.get_button(page_id, index)
+        if element is None or element.transition <= 0 or not element.source or element.transition_trigger != 'press':
+            return False
+
+        entity_id = element.source.get('entity_id')
+        targets = service_data.get('entity_id') if isinstance(service_data, dict) else None
+        # Only the key's own entity, through a domain that acts on it: Home
+        # Assistant silently ignores light.toggle on a switch
+        if not entity_id or targets not in (entity_id, [entity_id]):
+            return False
+        if domain not in (entity_id.split('.')[0], 'homeassistant'):
+            return False
+
+        # A second press before Home Assistant reported the first toggles
+        # from where the first one is heading
+        pending = self._predictions().get(index)
+        current = pending.state if pending else (self._ha.all_states.get(entity_id) or {}).get('state')
+        if current not in ('on', 'off'):
+            return False
+
+        target = self.PREDICTABLE_SERVICES[service] or ('off' if current == 'on' else 'on')
+        if target == current:
+            return False
+
+        look = self._look_in_state(element, entity_id, target)
+        if not look:
+            return False
+
+        button, predicted = look
+        self._clear_prediction(index)
+        expiry = asyncio.get_running_loop().create_task(self._expire_prediction(index))
+        self._predictions()[index] = Prediction(entity_id=entity_id, state=target, expiry=expiry)
+        self._send_changed({index: button}, {index: predicted}, predicted=True)
+        return True
+
+    def _held_by_prediction(self, index: int) -> bool:
+        ''' Whether an update for this key should wait: a press predicted a
+        state Home Assistant hasn't reported yet. A report of it confirms the
+        prediction. '''
+        prediction = self._predictions().get(index)
+        if not prediction:
+            return False
+
+        if (self._ha.all_states.get(prediction.entity_id) or {}).get('state') == prediction.state:
+            self._clear_prediction(index)
+            return False
+
+        return True
+
+    async def _expire_prediction(self, index: int):
+        await asyncio.sleep(self.PREDICTION_TIMEOUT)
+        prediction = self._predictions().get(index)
+        if prediction and prediction.expiry is asyncio.current_task():
+            # Home Assistant never reported it: show the key as it is
+            del self._predictions()[index]
+            self._show_actual(index)
+
+    def _drop_prediction(self, index: Optional[int]):
+        ''' The action failed: undo the key's predicted look now. '''
+        if index is not None and self._predictions().get(index):
+            self._clear_prediction(index)
+            self._show_actual(index)
+
+    def _actual_look(self, index: int):
+        ''' The key as Home Assistant last reported it: (button, element). '''
+        page = getattr(self, '_current_page_element', None)
+        element = page.buttons.get(index) if page else None
+        return PageElement.generate({index: element}, log=False)[index], element
+
+    def _show_actual(self, index: int):
+        button, element = self._actual_look(index)
+        self._send_changed({index: button}, {index: element} if element else {}, predicted=True)
+
+    def _clear_prediction(self, index: int):
+        prediction = self._predictions().pop(index, None)
+        if prediction and prediction.expiry is not asyncio.current_task():
+            prediction.expiry.cancel()
+
+    def _clear_predictions(self):
+        for index in list(self._predictions()):
+            self._clear_prediction(index)
+
+    def _schedule_draw_ahead(self):
+        task = self.__dict__.get('_draw_ahead_task')
+        if task:
+            task.cancel()
+        try:
+            self._draw_ahead_task = asyncio.get_running_loop().create_task(self._draw_ahead(self._current_page_element))
+        except RuntimeError:
+            pass
+
+    async def _draw_ahead(self, page: PageElement):
+        ''' Draw what pressing a fading key will need - its look in the other
+        state and the frames both ways - so the first press doesn't wait on
+        the drawing either. Each is drawn once and cached on disk. '''
+        # After the page itself is on its way
+        await asyncio.sleep(0.5)
+
+        loop = asyncio.get_running_loop()
+        for index, element in list(page.buttons.items()):
+            if self._current_page_element is not page:
+                return
+            if element is None or element.transition <= 0 or not element.source or index in self._transition_tasks():
+                continue
+
+            entity_id = element.source.get('entity_id')
+            state = (self._ha.all_states.get(entity_id) or {}).get('state') if entity_id else None
+            shown = self._shown_keys().get(index)
+            if state not in ('on', 'off') or not shown or not shown.get('icon'):
+                continue
+
+            try:
+                other = self._look_in_state(element, entity_id, 'off' if state == 'on' else 'on')
+                if other:
+                    button, other_element = other
+                    await loop.run_in_executor(None, crossfade_frames, shown['icon'], button['icon'], frame_count(other_element.transition))
+                    await loop.run_in_executor(None, crossfade_frames, button['icon'], shown['icon'], frame_count(element.transition))
+            except Exception as e:
+                print(f'⚠️ Could not draw ahead for key {index}: {e}')
+
+            await asyncio.sleep(0)
 
     async def _read_packets(self):
         button_index = None
@@ -720,6 +923,7 @@ class HomeDeck:
     def _reset(self):
         self._is_ready = False
         self._cancel_transitions()
+        self._clear_predictions()
         self._shown_keys().clear()
 
         if hasattr(self, '_device') and self._device:
@@ -874,6 +1078,7 @@ class HomeDeck:
     async def _show_connecting(self):
         ''' Animate a spinner on the deck until cancelled. '''
         self._cancel_transitions()
+        self._clear_predictions()
         self._shown_keys().clear()
         frames = spinner_frames(self._device.ICON_WIDTH)
         slot_count = self._device.BUTTON_COUNT + self.EXTRA_SLOTS

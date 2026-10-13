@@ -140,6 +140,10 @@ class FakeConfig:
     def __init__(self, alert_on_error=True):
         self.alert_on_error = alert_on_error
 
+    def get_button(self, page_id, index):
+        # No fading keys here, so no press predicts a look
+        return None
+
 
 def alert_keys(handle):
     import io

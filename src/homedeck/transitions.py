@@ -8,6 +8,7 @@ waiting update for a key into the next one, so stale frames are dropped and
 the final image is never late.
 '''
 import os
+import threading
 from typing import List
 
 from PIL import Image
@@ -55,6 +56,11 @@ def crossfade_frames(old_icon: str, new_icon: str, steps: int, cache_dir: str = 
             start = start.resize(end.size)
 
         for i, path in enumerate(paths, start=1):
-            Image.blend(start, end, ease(i / steps)).save(path, 'PNG')
+            # Written aside and moved into place: a press and the drawing
+            # ahead can make the same frame at once, and the driver must never
+            # zip a half-written file
+            tmp = f'{path}.{os.getpid()}.{threading.get_ident()}.tmp'
+            Image.blend(start, end, ease(i / steps)).save(tmp, 'PNG')
+            os.replace(tmp, path)
 
     return names
