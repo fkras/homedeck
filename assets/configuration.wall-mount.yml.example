@@ -10,6 +10,22 @@
 # Daytime brightness (1-100)
 brightness: 80
 
+# The deck's own sleep-time setting, in minutes, as Ulanzi Studio sends it.
+# 0 = never. Separate from `sleep` below, which is HomeDeck's dimming: this
+# one is a firmware setting. It does NOT stop the firmware locking onto its
+# screensaver when the host goes quiet - the once-a-second small-window update
+# is what prevents that, and HomeDeck sends it automatically.
+deck_sleep_timeout: 0
+
+# Flash the deck's built-in "!" on a key whose Home Assistant action failed -
+# a service Home Assistant refused, or a call that never went out. Useful while
+# wiring up entities, since a wrong domain fails silently otherwise.
+alert_on_error: true
+
+# Image the deck's firmware shows as its screensaver, relative to assets/.
+# Only uploaded when it changes. Unset leaves whatever the deck already has.
+# screensaver: screensaver.jpg
+
 sleep:
   # Never blank the screen. This is what makes the deck always-on.
   sleep_timeout: 0
